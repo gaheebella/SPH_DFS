@@ -7387,10 +7387,16 @@ physical :types .ModuleType ,
 perception :AdaptivePerception ,
 robots :Sequence [Any ],
 )->None :
-    """Feed NORMAL robots slowly through the stopped Anchor into the Junction."""
-    if not perception .anchor_fixed :
-        return 
-    if perception .handoff_complete :
+    """Slow NORMAL flow through the Junction without blocking Anchor overtaking."""
+    crawl_active =(
+    perception .state in {
+    PerceptionState .JUNCTION_APPROACH ,
+    PerceptionState .FIXED_ACCUMULATING ,
+    PerceptionState .BRANCHES_READY ,
+    }
+    and not perception .handoff_complete 
+    )
+    if not crawl_active :
         return 
     session =multi_dfs .child_session 
     if (
@@ -10896,6 +10902,17 @@ all_geometries :Sequence [ProvisionalGuardGeometry ],
 
         forward_speed =float (robot .velocity .dot (ingress_forward ))
         if forward_speed <=0.0 :
+            continue 
+
+        anchor_reference =(
+        perception .anchor_position 
+        if perception .anchor_position is not None 
+        else perception .leader .position 
+        )
+        entered_junction_axial =float (
+        (robot .position -anchor_reference ).dot (ingress_forward )
+        )
+        if entered_junction_axial <=0.0 :
             continue 
 
         def mouth_distance_key (candidate_geometry :ProvisionalGuardGeometry )->tuple [float ,str ]:
@@ -26062,8 +26079,24 @@ robots :Sequence [Any ],
 
     child .subtree_complete =False 
 
-    physical .active_branch_uid =(
+    physical .active_branch_uid =branch_uid 
+
+    selected_fixture =physical .branch_fixture_for_uid (
     branch_uid 
+    )
+    if selected_fixture is not None :
+        physical .active_branch =selected_fixture 
+
+    physical .phase =(
+    physical .SimulationPhase .EXPLORE_BRANCH 
+    )
+
+    print (
+    "[CurrentBranchPhysicalPhaseSync] "
+    f"junction={child .junction_uid } "
+    f"branch={branch_uid } "
+    f"fixture={selected_fixture } "
+    "phase=EXPLORE_BRANCH"
     )
 
     print (
@@ -26786,7 +26819,6 @@ branch_uid :str ,
     junction .branch_phase =(
     BranchPhase .IDLE 
     )
-
 
 
     physical .integration_child_dfs_phase =(
@@ -28420,6 +28452,13 @@ dt :float ,
     if branch_phase !=BranchPhase .FRONTIER_BOOTSTRAP :
         return 
 
+    lifecycle =physical .integration_wall_lifecycle .get (uid )
+    if lifecycle is None :
+        raise RuntimeError (
+        "Current Frontier lifecycle disappeared: "
+        f"uid={uid }"
+        )
+
     current_depth =float (
     physical .integration_frontier_depth 
     )
@@ -28448,6 +28487,33 @@ dt :float ,
     +1.0e-6 
     <target_depth 
     ):
+        return 
+
+    actual_depth =float (
+    lifecycle .get (
+    "rigid_applied_depth",
+    current_depth ,
+    )
+    )
+    actual_depth_tolerance =max (
+    0.25 *float (physical .ROBOT_RADIUS ),
+    1.0e-3 ,
+    )
+    if (
+    actual_depth 
+    +actual_depth_tolerance 
+    <target_depth 
+    ):
+        if (
+        getattr (physical ,"integration_frame",0 )%10 ==0 
+        ):
+            print (
+            "[FrontierBootstrapPhysicalWait] "
+            f"branch={uid } "
+            f"command_depth={next_depth :.3f} "
+            f"actual_depth={actual_depth :.3f} "
+            f"target_depth={target_depth :.3f}"
+            )
         return 
 
     descriptor =(
@@ -29063,13 +29129,6 @@ def main (argv :Sequence [str ]|None =None )->int :
             dt ,
             )
 
-            enforce_junction_entry_anchor_lead (
-            physical ,
-            perception ,
-            robots ,
-            dt ,
-            )
-
             apply_post_anchor_normal_crawl (
             physical ,
             perception ,
@@ -29265,14 +29324,6 @@ def main (argv :Sequence [str ]|None =None )->int :
                 proposed_position ,
                 dt ,
                 )
-                )
-
-                limited_position =constrain_normal_behind_anchor (
-                physical ,
-                perception ,
-                robot ,
-                before_update ,
-                limited_position ,
                 )
 
                 if (
