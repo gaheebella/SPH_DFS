@@ -28,9 +28,8 @@ HERE
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from pygame_simulator import (
-    lidar_junction_detection_adaptive_w_tau_anchor_stop_before_geometry as adaptive,
-)
+
+import lidar_junction_detection_adaptive_w_tau_anchor_stop_before_geometry as adaptive
 
 WINDOW_SIZE = (1440, 900)
 ROBOT_MOTION_SPEED_SCALE = 2.5
