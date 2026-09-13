@@ -28,8 +28,9 @@ HERE
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-
-import lidar_junction_detection_adaptive_w_tau_anchor_stop_before_geometry as adaptive
+from pygame_simulator import (
+    lidar_junction_detection_adaptive_w_tau_anchor_stop_before_geometry as adaptive,
+)
 
 WINDOW_SIZE = (1440, 900)
 ROBOT_MOTION_SPEED_SCALE = 2.5
@@ -78,7 +79,7 @@ MIN_PERSISTENT_OBSERVATIONS = 72
 MOVING_PERSISTENCE_WINDOW = 20
 MOVING_MIN_PERSISTENT_OBSERVATIONS = 12
 MOVING_PERSISTENCE_RATIO = 0.60
-PREVIOUS_APPROACH_EXTENSION =60.0 
+PREVIOUS_APPROACH_EXTENSION =40.0 
 BASE_ADDED_EXTENSION =0.0 
 APPROACH_EXTENSION =PREVIOUS_APPROACH_EXTENSION +BASE_ADDED_EXTENSION 
 ASSOCIATION_TOLERANCE_DEG =max (
@@ -114,10 +115,13 @@ GUARD_EDGE_SEAL_MARGIN_RATIO =0.25
 GUARD_LATERAL_OVERLAP_RATIO =0.90 
 PROVISIONAL_WALL_SETTLED_RATIO =0.95 
 PROVISIONAL_WALL_STABILITY_DWELL =0.18 
+
 JUNCTION_ARRIVAL_RATIO_THRESHOLD =0.45 
-JUNCTION_APPROACH_CRAWL_SPEED =10.0
-POST_ANCHOR_NORMAL_CRAWL_SPEED =6.0 
-LATERAL_BASELINE_SAMPLES =10 
+
+# Anchor와 NORMAL swarm이 Junction 접근 중 공통으로 사용하는 전진 속도
+INITIAL_FORWARD_SPEED = 20.0
+LATERAL_BASELINE_SAMPLES = 10 
+
 LATERAL_RANGE_JUMP_THRESHOLD =2.0 *TAU 
 ENTRANCE_STABILITY_FRAMES =1 
 
@@ -142,7 +146,7 @@ CHILD_APPROACH_SLOWDOWN_W_RATIO =0.35
 
 CHILD_STATIONARY_PERSISTENCE_RATIO =0.60 
 CHILD_STATIONARY_MIN_OUTGOING =2 
-LIDAR_ROBOT_ID =675 
+LIDAR_ROBOT_ID = 675
 
 
 class PerceptionState (Enum ):
@@ -3803,13 +3807,6 @@ dt :float ,
 
 
 
-
-
-
-
-
-
-
     if multi_dfs .child_probe_active :
         if active_uid !=multi_dfs .child_probe_branch_uid :
             return 
@@ -3830,20 +3827,6 @@ dt :float ,
 
         tangent =tangent .normalize ()
         normal =normal .normalize ()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
         session =multi_dfs .child_session 
@@ -3867,37 +3850,12 @@ dt :float ,
         lateral_velocity =lidar_robot .velocity .dot (left_axis )
 
 
-
-
-
-
-
         lateral_command =3.0 *(left_range -right_range )-2.2 *lateral_velocity 
 
         lateral_command =max (
         -55.0 ,
         min (55.0 ,lateral_command ),
         )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -3925,12 +3883,6 @@ dt :float ,
 
 
 
-
-
-
-
-
-
             existing_axial_acc =float (
             lidar_robot .acceleration .dot (
             axial_direction 
@@ -3941,39 +3893,6 @@ dt :float ,
             axial_direction 
             *existing_axial_acc 
             )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
             probe_cruise_speed =10.0 
@@ -4089,32 +4008,11 @@ dt :float ,
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         if (
         multi_dfs .child_candidate_active 
         and session is not None 
         and session .candidate_depth_local is not None 
         ):
-
-
-
-
 
 
             candidate_forward_speed =max (
@@ -4128,10 +4026,6 @@ dt :float ,
             session .candidate_depth_local 
             -session .candidate_traveled_axial ,
             )
-
-
-
-
 
 
 
@@ -4153,21 +4047,6 @@ dt :float ,
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
             slowdown_distance =max (
             CHILD_APPROACH_SLOWDOWN_W_RATIO 
             *candidate_width ,
@@ -4177,21 +4056,6 @@ dt :float ,
             remaining_depth =(
             session .candidate_remaining_depth 
             )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
             (
@@ -4272,13 +4136,6 @@ dt :float ,
                 return 
 
 
-
-
-
-
-
-
-
             drive_ratio =float (
             np .clip (
             remaining_depth 
@@ -4290,39 +4147,11 @@ dt :float ,
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
             axial_velocity =float (
             lidar_robot .velocity .dot (
             session .ingress_t 
             )
             )
-
-
-
-
-
-
-
-
-
-
 
             target_axial_speed =(
             3.0 
@@ -4333,22 +4162,6 @@ dt :float ,
             target_axial_speed 
             -axial_velocity 
             )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
             existing_axial_acc =float (
             lidar_robot .acceleration .dot (
@@ -4369,10 +4182,6 @@ dt :float ,
             0.25 
             *physical .MAX_ACCELERATION 
             )
-
-
-
-
 
 
 
@@ -4398,8 +4207,6 @@ dt :float ,
                 f"{session .candidate_traveled_axial :.2f} "
                 f"remaining="
                 f"{remaining_depth :.2f} "
-                f"stop_tol="
-                f"{stop_tolerance :.2f} "
                 f"sph_axial_removed="
                 f"{existing_axial_acc :.2f} "
                 f"axial_v="
@@ -5700,6 +5507,9 @@ physical :types .ModuleType ,
         !=physical .SimulationPhase .MOVE_TO_JUNCTION 
         ):
             return original_route_force (robot )
+
+        if getattr (robot ,"is_lidar_robot",False ):
+            return pygame .Vector2 ()
 
         if robot .role in {
         "PEBBLE",
@@ -7009,6 +6819,15 @@ robots :Sequence [Any ],
         robot .integration_anchor_relative_lateral =None 
         robot .integration_anchor_follow_forward =None 
         robot .integration_anchor_follow_lateral =None 
+    junction =multi_dfs .current 
+    if (
+    junction is not None 
+    and junction .branch_phase in {
+    BranchPhase .PRESSURE_PUSH ,
+    BranchPhase .FLOW_BACKTRACK ,
+    }
+    ):
+        return 
     if getattr (physical ,"integration_anchor_breakout_active",False ):
         return 
     if physical .phase not in {
@@ -7346,99 +7165,137 @@ dt :float ,
         f"half_width={yield_half_width :.2f}"
         )
 
-
-def apply_junction_approach_crawl (
-physical :types .ModuleType ,
-perception :AdaptivePerception ,
-)->None :
-    """Immediately clamp Anchor forward speed to the entrance crawl speed."""
-    if perception .state !=PerceptionState .JUNCTION_APPROACH :
-        return 
-    if perception .anchor_fixed :
-        return 
-    anchor =perception .leader 
-    forward =_body_local_unit (perception ,0.0 ).normalize ()
-    axial_velocity =float (anchor .velocity .dot (forward ))
-    lateral_velocity =anchor .velocity -forward *axial_velocity 
-    anchor .velocity =(
-    lateral_velocity +forward *JUNCTION_APPROACH_CRAWL_SPEED 
-    )
-    axial_acceleration =float (anchor .acceleration .dot (forward ))
-    anchor .acceleration -=forward *axial_acceleration 
-    if physical .integration_frame %5 ==0 :
-        print(
-            "[JunctionApproachCrawl] "
-            f"frame={physical.integration_frame} "
-            f"pos=({anchor.position.x:.3f},"
-            f"{anchor.position.y:.3f}) "
-            f"before_axial_v={axial_velocity:.3f} "
-            f"after_axial_v="
-            f"{anchor.velocity.dot(forward):.3f} "
-            f"target_v="
-            f"{JUNCTION_APPROACH_CRAWL_SPEED:.3f} "
-            f"removed_axial_acc="
-            f"{axial_acceleration:.3f}"
-        )
-
-
-def apply_post_anchor_normal_crawl (
+def control_initial_mobile_anchor (
 physical :types .ModuleType ,
 perception :AdaptivePerception ,
 robots :Sequence [Any ],
 )->None :
-    """Slow NORMAL flow through the Junction without blocking Anchor overtaking."""
-    crawl_active =(
-    perception .state in {
-    PerceptionState .JUNCTION_APPROACH ,
-    PerceptionState .FIXED_ACCUMULATING ,
-    PerceptionState .BRANCHES_READY ,
-    }
-    and not perception .handoff_complete 
-    )
-    if not crawl_active :
-        return 
-    session =multi_dfs .child_session 
+    """Control only the Root BASE-to-J0 LiDAR Anchor."""
     if (
-    session is not None 
-    and session .ingress_t .length_squared ()>physical .EPSILON 
+    physical .phase 
+    !=physical .SimulationPhase .MOVE_TO_JUNCTION 
     ):
-        forward =session .ingress_t .normalize ()
-    else :
-        forward =_body_local_unit (perception ,0.0 ).normalize ()
-    target_speed =POST_ANCHOR_NORMAL_CRAWL_SPEED 
-    max_feed_accel =0.12 *physical .MAX_ACCELERATION 
-    kp =5.0 
-    released =0 
-    ahead =0 
+        return 
+    if perception .handoff_complete :
+        return 
+
     anchor =perception .leader 
-    for robot in robots :
-        if robot is anchor :
-            continue 
-        if robot .role !="NORMAL":
-            continue 
-        if robot .base_reserve :
-            continue 
-        forward_speed =float (robot .velocity .dot (forward ))
-        speed_error =target_speed -forward_speed 
-        feed_accel =float (
-        np .clip (kp *speed_error ,-max_feed_accel ,+max_feed_accel )
+    if perception .anchor_fixed :
+        return 
+    lidar_frame =perception .last_frame 
+    if lidar_frame is None :
+        return 
+
+    forward =_body_local_unit (perception ,0.0 )
+    left_axis =_body_local_unit (perception ,-90.0 )
+    if (
+    forward .length_squared ()<=physical .EPSILON 
+    or left_axis .length_squared ()<=physical .EPSILON 
+    ):
+        return 
+    forward =forward .normalize ()
+    left_axis =left_axis .normalize ()
+
+    observations =observe_local_neighbors (
+    anchor ,
+    robots ,
+    forward ,
+    lateral_axis =left_axis ,
+    max_range =0.90 *physical .COMM_RANGE ,
+    predicate =lambda robot :(
+    robot is not anchor 
+    and robot .role =="NORMAL"
+    and not robot .base_reserve 
+    ),
+    )
+    lateral_band =max (
+    1.5 *physical .SMOOTHING_LENGTH ,
+    3.0 *physical .SAFE_RADIUS ,
+    )
+    observations =[
+    observation 
+    for observation in observations 
+    if abs (observation .relative_lateral )<=lateral_band 
+    ]
+
+    target_gap =float (physical .integration_anchor_target_gap )
+    if observations :
+        front_relative =max (
+        observation .relative_axial 
+        for observation in observations 
         )
-        robot .acceleration +=forward *feed_accel 
-        if forward_speed >target_speed :
-            robot .velocity -=forward *(
-            forward_speed -target_speed 
-            )
-        relative_axial =float ((robot .position -anchor .position ).dot (forward ))
-        if relative_axial >0.0 :
-            ahead +=1 
-        released +=1 
+        front_cohort =[
+        observation .robot 
+        for observation in observations 
+        if observation .relative_axial >=(
+        front_relative -2.0 *physical .GRID_ROW_SPACING 
+        )
+        ]
+        current_gap =-float (front_relative )
+        swarm_front_speed =float (
+        np .median (
+        [robot .velocity .dot (forward )for robot in front_cohort ]
+        )
+        )
+    else :
+        current_gap =float ("inf")
+        swarm_front_speed =0.0 
+
+    root_cruise_speed =18.0 *ROBOT_MOTION_SPEED_SCALE 
+    target_speed =root_cruise_speed 
+    if perception .state ==PerceptionState .JUNCTION_APPROACH :
+        target_speed =min (target_speed ,0.85 *root_cruise_speed )
+
+    anchor_forward_speed =float (anchor .velocity .dot (forward ))
+    longitudinal_accel =float (
+    np .clip (
+    6.0 *(target_speed -anchor_forward_speed ),
+    -0.35 *physical .MAX_ACCELERATION ,
+    +0.35 *physical .MAX_ACCELERATION ,
+    )
+    )
+
+    left_range =_range_at_local_angle (lidar_frame ,-90.0 )
+    right_range =_range_at_local_angle (lidar_frame ,+90.0 )
+    corridor_acquired =(
+    left_range <0.98 *MAX_RANGE 
+    and right_range <0.98 *MAX_RANGE 
+    )
+    lateral_speed =float (anchor .velocity .dot (left_axis ))
+    if corridor_acquired :
+        center_error =left_range -right_range 
+        lateral_accel =float (
+        np .clip (
+        4.5 *center_error -3.0 *lateral_speed ,
+        -0.30 *physical .MAX_ACCELERATION ,
+        +0.30 *physical .MAX_ACCELERATION ,
+        )
+        )
+    else :
+        center_error =0.0 
+        lateral_accel =float (
+        np .clip (
+        -2.5 *lateral_speed ,
+        -0.15 *physical .MAX_ACCELERATION ,
+        +0.15 *physical .MAX_ACCELERATION ,
+        )
+        )
+
+    anchor .acceleration .update (0.0 ,0.0 )
+    anchor .acceleration +=forward *longitudinal_accel 
+    anchor .acceleration +=left_axis *lateral_accel 
+
     if physical .integration_frame %10 ==0 :
         print (
-        "[PostAnchorSwarmRelease] "
+        "[InitialMobileAnchor] "
         f"frame={physical .integration_frame } "
-        f"released_normals={released } "
-        f"normal_ahead_of_anchor={ahead } "
-        f"target_speed={target_speed :.3f}"
+        f"id={anchor .robot_id } "
+        f"gap={current_gap :.2f} "
+        f"target_gap={target_gap :.2f} "
+        f"swarm_front_speed={swarm_front_speed :.2f} "
+        f"anchor_speed={anchor_forward_speed :.2f} "
+        f"target_speed={target_speed :.2f} "
+        f"center_error={center_error :.2f}"
         )
 
 
@@ -7450,6 +7307,11 @@ before_update :pygame .Vector2 ,
 proposed_position :pygame .Vector2 ,
 )->pygame .Vector2 :
     """Cancel only this frame's pre-stop NORMAL Anchor crossing."""
+    if (
+    physical .phase ==physical .SimulationPhase .MOVE_TO_JUNCTION 
+    and not perception .handoff_complete 
+    ):
+        return proposed_position 
     if perception .anchor_fixed :
         return proposed_position 
     anchor =perception .leader 
@@ -7492,6 +7354,7 @@ dt :float ,
     root_entry_active =(
     physical .phase ==physical .SimulationPhase .MOVE_TO_JUNCTION 
     and not perception .handoff_complete 
+    and not perception .anchor_fixed 
     )
     session =multi_dfs .child_session 
     child_entry_active =(
@@ -9324,8 +9187,9 @@ descriptor :Any ,
 
 
     mouth_half =0.5 *float (descriptor .observed_physical_width )
-    wall_clearance =physical .ROBOT_RADIUS *(
-    1.0 +GUARD_EDGE_SEAL_MARGIN_RATIO 
+    wall_clearance =max (
+    3.0 *physical .ROBOT_RADIUS ,
+    physical .ROBOT_RADIUS +0.50 ,
     )
     center_half =max (
     0.0 ,
@@ -9333,6 +9197,172 @@ descriptor :Any ,
     )
 
     return (-center_half ,center_half )
+
+
+def resolve_localized_physical_wall_frame (
+physical :types .ModuleType ,
+perception :AdaptivePerception ,
+geometry :ProvisionalGuardGeometry ,
+)->None :
+    """Freeze a Guard frame from the physical-map side walls, not LiDAR chord geometry."""
+    if (
+    geometry .mouth_start_world is None 
+    or geometry .mouth_end_world is None 
+    ):
+        raise RuntimeError (f"Missing mouth hints: uid={geometry .provisional_uid }")
+
+    def closest_point (point :pygame .Vector2 ,start :pygame .Vector2 ,end :pygame .Vector2 )->pygame .Vector2 :
+        segment =end -start 
+        length_sq =segment .length_squared ()
+        if length_sq <=physical .EPSILON :
+            return start .copy ()
+        alpha =float (np .clip ((point -start ).dot (segment )/length_sq ,0.0 ,1.0 ))
+        return start +segment *alpha 
+
+    points =[pygame .Vector2 (point )for point in physical .cross_points ]
+    segments =[]
+    for index ,start in enumerate (points ):
+        end =points [(index +1 )%len (points )]
+        direction =end -start 
+        if direction .length_squared ()<=physical .EPSILON :
+            continue 
+        segments .append ((index ,start ,end ,direction .normalize ()))
+
+    hint_a =geometry .mouth_start_world 
+    hint_b =geometry .mouth_end_world 
+    hint_span =hint_a .distance_to (hint_b )
+    parallel_min =math .cos (math .radians (1.0 ))
+    best =None 
+
+    for left_index ,left_start ,left_end ,left_direction in segments :
+        for right_index ,right_start ,right_end ,right_direction in segments :
+            if right_index <=left_index :
+                continue 
+            parallel_dot =abs (left_direction .dot (right_direction ))
+            if parallel_dot <parallel_min :
+                continue 
+            if left_direction .dot (right_direction )<0.0 :
+                right_direction =-right_direction 
+            axis =(left_direction +right_direction )
+            if axis .length_squared ()<=physical .EPSILON :
+                continue 
+            axis =axis .normalize ()
+            cross =pygame .Vector2 (-axis .y ,axis .x ).normalize ()
+            left_a =closest_point (hint_a ,left_start ,left_end )
+            left_b =closest_point (hint_b ,left_start ,left_end )
+            right_a =closest_point (hint_a ,right_start ,right_end )
+            right_b =closest_point (hint_b ,right_start ,right_end )
+            direct =left_a .distance_to (hint_a )+right_b .distance_to (hint_b )
+            swapped =left_b .distance_to (hint_b )+right_a .distance_to (hint_a )
+            if swapped <direct :
+                side_a ,side_b ,hint_error =left_b ,right_a ,swapped 
+            else :
+                side_a ,side_b ,hint_error =left_a ,right_b ,direct 
+            separation =abs ((side_b -side_a ).dot (cross ))
+            if separation <=2.0 *physical .ROBOT_RADIUS :
+                continue 
+            separation_error =abs (separation -hint_span )
+            tolerance =max (4.0 *physical .ROBOT_RADIUS ,0.35 *max (separation ,hint_span ))
+            if separation_error >tolerance :
+                continue 
+            score =hint_error +separation_error 
+            if best is None or score <best [0 ]:
+                best =(score ,left_index ,left_start ,left_end ,right_index ,right_start ,right_end ,left_direction ,right_direction ,side_a ,side_b ,parallel_dot ,separation )
+
+    if best is None :
+        raise RuntimeError (
+        "No physical parallel side-wall pair matches Guard mouth: "
+        f"uid={geometry .provisional_uid } hint_span={hint_span :.3f}"
+        )
+
+    (_,left_index,left_start,left_end,right_index,right_start,right_end,left_direction,right_direction,side_a,side_b,parallel_dot,wall_span)=best 
+    if parallel_dot <math .cos (math .radians (1.0 )):
+        raise RuntimeError (
+        "Localized side walls are not parallel: "
+        f"uid={geometry .provisional_uid } dot={parallel_dot :.6f}"
+        )
+    corridor_axis =(left_direction +right_direction ).normalize ()
+    hint_center =0.5 *(hint_a +hint_b )
+    if corridor_axis .dot (hint_center -perception .leader .position )<0.0 :
+        corridor_axis =-corridor_axis 
+
+    cross_axis =pygame .Vector2 (
+    -corridor_axis .y ,
+    corridor_axis .x ,
+    ).normalize ()
+    if cross_axis .dot (hint_b -hint_a )<0.0 :
+        cross_axis =-cross_axis 
+
+    def point_on_wall_at_axial (
+    start :pygame .Vector2 ,
+    end :pygame .Vector2 ,
+    axial_value :float ,
+    )->pygame .Vector2 :
+        direction =end -start 
+        denominator =float (direction .dot (corridor_axis ))
+        if abs (denominator )<=physical .EPSILON :
+            raise RuntimeError (
+            "Side wall is perpendicular to localized corridor axis: "
+            f"uid={geometry .provisional_uid }"
+            )
+        alpha =(axial_value -float (start .dot (corridor_axis )))/denominator 
+        if alpha < -physical .EPSILON or alpha >1.0 +physical .EPSILON :
+            raise RuntimeError (
+            "Localized entry station lies outside physical side wall: "
+            f"uid={geometry .provisional_uid } alpha={alpha :.6f}"
+            )
+        return start +direction *float (np .clip (alpha ,0.0 ,1.0 ))
+
+    entry_axial =float (hint_center .dot (corridor_axis ))
+    side_a =point_on_wall_at_axial (
+    left_start ,
+    left_end ,
+    entry_axial ,
+    )
+    side_b =point_on_wall_at_axial (
+    right_start ,
+    right_end ,
+    entry_axial ,
+    )
+    entry_center =0.5 *(side_a +side_b )
+    wall_span =abs ((side_b -side_a ).dot (cross_axis ))
+    if abs (corridor_axis .dot (cross_axis ))>1.0e-4 :
+        raise RuntimeError (f"Invalid localized wall frame: uid={geometry .provisional_uid }")
+
+    descriptor =geometry .descriptor 
+    geometry .mouth_start_world =side_a .copy ()
+    geometry .mouth_end_world =side_b .copy ()
+    geometry .mouth_center_world =entry_center .copy ()
+    geometry .mouth_lateral_unit =cross_axis .copy ()
+    geometry .branch_tangent_unit =corridor_axis .copy ()
+    geometry .mouth_span =wall_span 
+    descriptor .observed_mouth_position =entry_center .copy ()
+    descriptor .observed_width =wall_span 
+    descriptor .motion_observed_width =wall_span 
+    descriptor .observed_flow_width =wall_span 
+    descriptor .observed_physical_width =wall_span 
+    descriptor .physical_left_boundary_lateral =-0.5 *wall_span 
+    descriptor .physical_right_boundary_lateral =0.5 *wall_span 
+    descriptor .local_outgoing_direction =corridor_axis .copy ()
+    descriptor .local_return_direction =-corridor_axis 
+    descriptor .direction_last_estimate =corridor_axis .copy ()
+    descriptor .direction_stability_reference =corridor_axis .copy ()
+    descriptor .motion_t =corridor_axis .copy ()
+    descriptor .motion_n =cross_axis .copy ()
+    descriptor .motion_frame_locked =True 
+    descriptor .motion_frame_source ="LOCALIZED_PHYSICAL_SIDE_WALLS"
+
+    print (
+    "[LocalizedPhysicalWallFrame] "
+    f"uid={geometry .provisional_uid } "
+    f"segments=({left_index },({left_start .x :.2f},{left_start .y :.2f})->({left_end .x :.2f},{left_end .y :.2f})),"
+    f"({right_index },({right_start .x :.2f},{right_start .y :.2f})->({right_end .x :.2f},{right_end .y :.2f})) "
+    f"dirs=({left_direction .x :.3f},{left_direction .y :.3f})/({right_direction .x :.3f},{right_direction .y :.3f}) "
+    f"parallel_dot={parallel_dot :.5f} "
+    f"axis=({corridor_axis .x :.3f},{corridor_axis .y :.3f}) "
+    f"cross=({cross_axis .x :.3f},{cross_axis .y :.3f}) "
+    f"span={wall_span :.3f}"
+    )
 
 
 def compute_sealing_aware_column_count (
@@ -9389,28 +9419,24 @@ perception :AdaptivePerception |None =None ,
         "localized LiDAR mouth endpoints"
         )
 
-    mouth_start =geometry .mouth_start_world .copy ()
-    mouth_end =geometry .mouth_end_world .copy ()
-    mouth_vector =mouth_end -mouth_start 
-    mouth_span =float (mouth_vector .length ())
+    mouth_center =geometry .mouth_center_world 
+    normal =geometry .mouth_lateral_unit 
+    tangent =geometry .branch_tangent_unit 
+    mouth_span =float (geometry .mouth_span )
 
-    if mouth_span <=physical .EPSILON :
+    if (
+    mouth_center is None 
+    or normal is None 
+    or tangent is None 
+    or mouth_span <=physical .EPSILON 
+    ):
         raise RuntimeError (
-        "Guard mouth endpoints are degenerate: "
+        "Localized physical Guard wall frame is missing: "
         f"uid={descriptor .uid }"
         )
-
-    normal =mouth_vector .normalize ()
-    mouth_center =0.5 *(mouth_start +mouth_end )
-    tangent =pygame .Vector2 (-normal .y ,normal .x ).normalize ()
-
-    prior_tangent =geometry .branch_tangent_unit 
-    if (
-    prior_tangent is not None 
-    and prior_tangent .length_squared ()>physical .EPSILON 
-    and tangent .dot (prior_tangent )<0.0 
-    ):
-        tangent =-tangent 
+    mouth_center =mouth_center .copy ()
+    normal =normal .normalize ()
+    tangent =tangent .normalize ()
 
     descriptor .observed_mouth_position =mouth_center .copy ()
     descriptor .local_outgoing_direction =tangent .copy ()
@@ -9420,7 +9446,7 @@ perception :AdaptivePerception |None =None ,
     descriptor .motion_t =tangent .copy ()
     descriptor .motion_n =normal .copy ()
     descriptor .motion_frame_locked =True 
-    descriptor .motion_frame_source ="LOCALIZED_LIDAR_MOUTH_ENDPOINTS"
+    descriptor .motion_frame_source ="LOCALIZED_PHYSICAL_SIDE_WALLS"
     descriptor .observed_width =mouth_span 
     descriptor .motion_observed_width =mouth_span 
     descriptor .observed_flow_width =mouth_span 
@@ -9475,148 +9501,12 @@ perception :AdaptivePerception |None =None ,
     )
 
     if current_walkable <total_required :
-
-        max_extra_inset =min (
-        4.0 *physical .ROBOT_RADIUS ,
-        0.15 *mouth_span ,
+        raise RuntimeError (
+        "Localized physical Guard frame produced unwalkable slots; "
+        "slot geometry must not be post-adjusted: "
+        f"uid={descriptor .uid } walkable={current_walkable }/"
+        f"{total_required }"
         )
-
-        corrected =False 
-
-        for extra_inset in np .linspace (
-        0.0 ,
-        max_extra_inset ,
-        41 ,
-        ):
-            test_min =lateral_min +float (extra_inset )
-            test_max =lateral_max -float (extra_inset )
-
-            if test_max <=test_min :
-                break 
-
-            if (
-            walkable_count_for_interval (
-            test_min ,
-            test_max ,
-            )
-            ==total_required 
-            ):
-                lateral_min =test_min 
-                lateral_max =test_max 
-
-                spacing =(
-                lateral_max -lateral_min 
-                )/max (columns -1 ,1 )
-
-                corrected =True 
-
-                print (
-                f"[GuardSpanCorrection] "
-                f"uid={descriptor .uid } "
-                f"extra_inset={extra_inset :.3f} "
-                f"walkable={total_required }/"
-                f"{total_required }"
-                )
-                break 
-
-        if not corrected :
-
-
-            diagnostic_spacing =(
-            lateral_max -lateral_min 
-            )/max (
-            columns -1 ,
-            1 ,
-            )
-
-            unwalkable_diagnostics =[]
-
-            for layer in range (layers ):
-
-                axial =(
-                physical .JUNCTION_GUARD_BRANCH_INSET 
-                +layer 
-                *physical .THICK_MOUTH_GUARD_LAYER_SPACING 
-                )
-
-                for column in range (columns ):
-
-                    lateral =(
-                    lateral_min 
-                    +diagnostic_spacing 
-                    *column 
-                    )
-
-                    slot =(
-                    mouth_center 
-                    +tangent *axial 
-                    +normal *lateral 
-                    )
-
-                    if physical .is_walkable (
-                    slot ,
-                    physical .ROBOT_RADIUS ,
-                    ):
-                        continue 
-
-                    unwalkable_diagnostics .append (
-                    (
-                    layer ,
-                    column ,
-                    axial ,
-                    lateral ,
-                    slot .x ,
-                    slot .y ,
-                    )
-                    )
-
-            print (
-            "[GuardUnwalkableSummary] "
-            f"uid={descriptor .uid } "
-            f"rows={layers } "
-            f"cols={columns } "
-            f"unwalkable="
-            f"{len (unwalkable_diagnostics )}/"
-            f"{total_required } "
-            f"t=({tangent .x :.3f},"
-            f"{tangent .y :.3f}) "
-            f"n=({normal .x :.3f},"
-            f"{normal .y :.3f}) "
-            f"mouth="
-            f"({mouth_center .x :.3f},"
-            f"{mouth_center .y :.3f}) "
-            f"span="
-            f"{lateral_max -lateral_min :.3f}"
-            )
-
-            for (
-            layer ,
-            column ,
-            axial ,
-            lateral ,
-            world_x ,
-            world_y ,
-            )in unwalkable_diagnostics :
-
-                print (
-                "[GuardUnwalkableSlot] "
-                f"uid={descriptor .uid } "
-                f"layer={layer } "
-                f"column={column } "
-                f"axial={axial :.3f} "
-                f"lateral={lateral :.3f} "
-                f"world="
-                f"({world_x :.3f},"
-                f"{world_y :.3f})"
-                )
-
-            raise RuntimeError (
-            f"Guard geometry has unreachable slots: "
-            f"uid={descriptor .uid } "
-            f"walkable={current_walkable }/"
-            f"{total_required }"
-            )
-
 
 
     if geometry is not None :
@@ -9652,6 +9542,22 @@ perception :AdaptivePerception |None =None ,
         f"n=({normal .x :.3f},{normal .y :.3f})"
         )
 
+    edge_clearance =0.5 *mouth_span -max (abs (lateral_min ),abs (lateral_max ))
+    print (
+    "[LocalizedGuardSlotClearance] "
+    f"uid={descriptor .uid } "
+    f"physical_span={mouth_span :.3f} "
+    f"safe_span={lateral_max -lateral_min :.3f} "
+    f"edge_clearance=({edge_clearance :.3f},{edge_clearance :.3f})"
+    )
+    for slot_index ,slot in enumerate (slots ):
+        if not physical .is_walkable (slot ,physical .ROBOT_RADIUS ):
+            raise RuntimeError (
+            "Localized physical Guard slot is unwalkable: "
+            f"uid={descriptor .uid } slot={slot_index } "
+            f"position=({slot .x :.3f},{slot .y :.3f})"
+            )
+
     return slots 
 
 
@@ -9665,9 +9571,13 @@ perception :AdaptivePerception |None =None ,
     """Create every LiDAR-derived layer at once; robot positions are unread."""
     for geometry in geometries :
         descriptor =geometry .descriptor 
-        if geometry .mouth_span >0.0 :
-            descriptor .observed_width =geometry .mouth_span 
-            descriptor .observed_physical_width =geometry .mouth_span 
+        if perception is None :
+            raise RuntimeError ("Localized Guard frame requires perception")
+        resolve_localized_physical_wall_frame (
+        physical ,
+        perception ,
+        geometry ,
+        )
         columns ,lateral_min ,lateral_max ,slot_spacing =(
         compute_sealing_aware_column_count (physical ,descriptor )
         )
@@ -11680,30 +11590,81 @@ robots :Sequence [Any ],
 
 
 
-        occupied_slots ={
-        int (robot .integration_guard_slot_index )
-        for robot in robots 
-        if robot .robot_id in geometry .selected_ids 
-        and getattr (robot ,"integration_guard_slot_index",None )is not None 
-        }
+        occupied_by_slot ={}
+        for robot in robots :
+            if robot .robot_id not in geometry .selected_ids :
+                continue 
+            slot_index =getattr (
+            robot ,
+            "integration_guard_slot_index",
+            None ,
+            )
+            if slot_index is None :
+                continue 
+            occupied_by_slot [int (slot_index )]=robot 
 
-        column_priority =build_edge_sealing_slot_order (
-        geometry .columns 
-        )
+        occupied_slots =set (occupied_by_slot .keys ())
+        row_release_settled_ratio =0.90 
+        active_layer =geometry .layers -1 
 
-        slot_priority =[
-        layer *geometry .columns +column 
-        for layer in reversed (
-        range (geometry .layers )
-        )
-        for column in column_priority 
-        ]
+        while active_layer >=0 :
+            layer_start =active_layer *geometry .columns 
+            layer_slot_indices =list (
+            range (
+            layer_start ,
+            layer_start +geometry .columns ,
+            )
+            )
+            layer_robots =[
+            occupied_by_slot .get (slot_index )
+            for slot_index in layer_slot_indices 
+            ]
+            layer_fully_assigned =all (
+            robot is not None 
+            for robot in layer_robots 
+            )
+            if not layer_fully_assigned :
+                break 
 
-        empty_slots =[
-        slot_index 
-        for slot_index in slot_priority 
-        if slot_index not in occupied_slots 
-        ]
+            settled_count =0 
+            for robot in layer_robots :
+                final_anchor =getattr (
+                robot ,
+                "integration_guard_final_anchor",
+                None ,
+                )
+                if final_anchor is None :
+                    continue 
+                if (
+                robot .position .distance_to (final_anchor )
+                <=physical .JUNCTION_GUARD_POSITION_TOLERANCE 
+                ):
+                    settled_count +=1 
+
+            settled_ratio =settled_count /max (len (layer_slot_indices ),1 )
+            if settled_ratio <row_release_settled_ratio :
+                break 
+            active_layer -=1 
+
+        if active_layer <0 :
+            empty_slots =[]
+        else :
+            column_priority =list (range (geometry .columns ))
+            empty_slots =[
+            active_layer *geometry .columns +column 
+            for column in column_priority 
+            if active_layer *geometry .columns +column not in occupied_slots 
+            ]
+
+        if frame %20 ==0 and active_layer >=0 :
+            print (
+            "[GuardRowStage] "
+            f"uid={geometry .provisional_uid } "
+            f"active_layer={active_layer } "
+            "order=DEEP_TO_JUNCTION "
+            f"filled={sum (slot in occupied_slots for slot in range (active_layer *geometry .columns ,(active_layer +1 )*geometry .columns ))}/"
+            f"{geometry .columns }"
+            )
 
 
 
@@ -12085,7 +12046,7 @@ robots :Sequence [Any ],
         and maximum_internal_gap 
         <=physical .FRONTIER_LINE_MAX_INTERNAL_GAP 
         )
-        if structurally_sealed and settled_ratio >=PROVISIONAL_WALL_SETTLED_RATIO :
+        if structurally_sealed :
             status ["wall_ready_dwell"]=min (
             float (status .get ("wall_ready_dwell",0.0 ))+
             float (getattr (physical ,"NORMAL_PHYSICS_MAX_DT",1.0 /60.0 )),
@@ -12108,12 +12069,11 @@ robots :Sequence [Any ],
         "ready":ready ,
         })
         reasons =[]
-        if settled_ratio <PROVISIONAL_WALL_SETTLED_RATIO :reasons .append ("settled_ratio")
         if complete_rows !=geometry .layers :reasons .append ("complete_rows")
         if minimum_span_ratio <physical .FRONTIER_LINE_MIN_SPAN_RATIO :reasons .append ("span_ratio")
         if maximum_edge_gap >physical .FRONTIER_LINE_MAX_EDGE_GAP :reasons .append ("edge_gap")
         if maximum_internal_gap >physical .FRONTIER_LINE_MAX_INTERNAL_GAP :reasons .append ("internal_gap")
-        if structurally_sealed and settled_ratio >=PROVISIONAL_WALL_SETTLED_RATIO and not ready :
+        if structurally_sealed and not ready :
             reasons .append ("stable_dwell")
         if getattr (physical ,"integration_frame",0 )%10 ==0 or ready :
             print (f"[WallReadyBlocker] uid={geometry .provisional_uid } guard_count={len (guards )} expected={len (geometry .slots )} settled={settled }/{len (guards )} settled_ratio={settled_ratio :.3f} complete_rows={complete_rows }/{geometry .layers } expected_span={expected_span_max :.3f} actual_span={actual_span_max :.3f} span_ratio={minimum_span_ratio :.3f} left_edge_gap={left_edge_gap_max :.3f} right_edge_gap={right_edge_gap_max :.3f} max_edge_gap={maximum_edge_gap :.3f} max_internal_gap={maximum_internal_gap :.3f} structurally_sealed={structurally_sealed } stable_dwell={status ['wall_ready_dwell']:.3f} ready={ready } blocking_reasons={reasons }")
@@ -12280,7 +12240,6 @@ def install_thick_wall_readiness_audit (physical :types .ModuleType )->None :
             and columns >=physical .JUNCTION_GUARD_MIN_COUNT 
             and len (guards )>=rows *columns 
             and complete_rows ==rows 
-            and branch_stats ["settled_ratio"]>=PROVISIONAL_WALL_SETTLED_RATIO 
             and minimum_span_ratio 
             >=physical .FRONTIER_LINE_MIN_SPAN_RATIO 
             and maximum_edge_gap 
@@ -12996,6 +12955,9 @@ class DeadEndDiagnostics :
     actual_forward_speed :float =float ("inf")
     forward_blocked_ratio :float =0.0 
     lidar_blocked :bool =False 
+    rigid_wall_blocked :bool =False 
+    rigid_wall_blocked_count :int =0 
+    rigid_wall_blocker_requirement :int =0 
     no_junction_evidence :bool =False 
     dwell :float =0.0 
     confirmed :bool =False 
@@ -13007,6 +12969,9 @@ class DeadEndDiagnostics :
         self .actual_forward_speed =float ("inf")
         self .forward_blocked_ratio =0.0 
         self .lidar_blocked =False 
+        self .rigid_wall_blocked =False 
+        self .rigid_wall_blocked_count =0 
+        self .rigid_wall_blocker_requirement =0 
         self .no_junction_evidence =False 
         self .dwell =0.0 
         self .confirmed =False 
@@ -13152,7 +13117,6 @@ dt :float ,
 
     if (
     lidar_frame is not None 
-    and lidar_frame .selected is not None 
     and len (lidar_frame .angles )>0 
     ):
         forward_indices =[
@@ -13166,15 +13130,34 @@ dt :float ,
         ]
 
         if forward_indices :
-            threshold =float (
-            lidar_frame .selected 
+            observed_width =max (
+            float (
+            getattr (
+            descriptor ,
+            "observed_physical_width",
+            0.0 ,
+            )
+            or getattr (
+            descriptor ,
+            "observed_width",
+            0.0 ,
+            )
+            ),
+            4.0 *physical .ROBOT_RADIUS ,
+            )
+
+            # This is raw forward LiDAR range evidence, deliberately
+            # independent of the adaptive opening threshold.
+            front_block_distance =max (
+            0.5 *observed_width ,
+            4.0 *physical .ROBOT_RADIUS ,
             )
 
             blocked_count =sum (
-            float (
-            lidar_frame .smoothed [index ]
-            )
-            <threshold 
+            math .isfinite (float (lidar_frame .smoothed [index ]))
+            and float (lidar_frame .smoothed [index ])>0.0
+            and float (lidar_frame .smoothed [index ])
+            <=front_block_distance
             for index in forward_indices 
             )
 
@@ -13229,13 +13212,31 @@ dt :float ,
     )
     )
 
+    # The rigid Frontier transport is the authoritative local indication
+    # that a wall, rather than a robot or communication constraint, blocks
+    # the complete boundary.  It is produced by is_walkable() probes in the
+    # transport controller and remains valid for arbitrary runtime branch UIDs.
+    lifecycle =current_junction_branch_lifecycle (
+    physical ,
+    multi_dfs .current ,
+    branch_uid ,
+    )
+
+    diagnostics .rigid_wall_blocked_count =int (
+    lifecycle .get ("rigid_wall_blocked_count",0 )
+    ) if lifecycle is not None else 0
+    diagnostics .rigid_wall_blocker_requirement =int (
+    lifecycle .get ("rigid_wall_blocker_requirement",0 )
+    ) if lifecycle is not None else 0
+    diagnostics .rigid_wall_blocked =bool (
+    lifecycle .get ("rigid_wall_blocked",False )
+    ) if lifecycle is not None else False
+
+    # LiDAR is the dead-end decision authority.  Transport and velocity
+    # measurements remain diagnostics only.
     evidence =(
-    diagnostics .command_forward_speed 
-    >=command_threshold 
-    and diagnostics .actual_forward_speed 
-    <=progress_threshold 
-    and diagnostics .lidar_blocked 
-    and diagnostics .no_junction_evidence 
+    diagnostics .lidar_blocked
+    and diagnostics .no_junction_evidence
     )
 
     diagnostics .dwell =(
@@ -13245,7 +13246,7 @@ dt :float ,
     )
 
     diagnostics .confirmed =(
-    diagnostics .dwell >=0.45 
+    diagnostics .dwell >=0.12
     )
 
     if (
@@ -13268,9 +13269,14 @@ dt :float ,
         f"{diagnostics .lidar_blocked } "
         f"blocked_ratio="
         f"{diagnostics .forward_blocked_ratio :.3f} "
+        f"rigid_wall_blocked="
+        f"{diagnostics .rigid_wall_blocked } "
+        f"rigid_wall_count="
+        f"{diagnostics .rigid_wall_blocked_count }/"
+        f"{diagnostics .rigid_wall_blocker_requirement } "
         f"no_junction="
         f"{diagnostics .no_junction_evidence } "
-        f"dwell={diagnostics .dwell :.3f}/0.450 "
+        f"dwell={diagnostics .dwell :.3f}/0.120 "
         f"confirmed={diagnostics .confirmed }"
         )
 
@@ -14108,7 +14114,16 @@ def install_local_physical_saturation_bridge (physical :types .ModuleType )->Non
         ):
             lateral =-lateral 
 
-        source ="LIDAR_FROZEN_GUARD_FRAME"
+        source =getattr (
+        descriptor ,
+        "motion_frame_source",
+        "LOCALIZED_PHYSICAL_SIDE_WALLS",
+        )
+        if source !="LOCALIZED_PHYSICAL_SIDE_WALLS":
+            raise RuntimeError (
+            "Transport frame is not localized physical side walls: "
+            f"branch={branch } source={source }"
+            )
 
         return (
         tangent ,
@@ -16082,34 +16097,6 @@ def install_local_physical_saturation_bridge (physical :types .ModuleType )->Non
                     "ROUTE_FORCE",
                     adaptive .LOCAL_FORWARD_DRIVE_FORCE ,
                     ))
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
                     follow_force =pygame .Vector2 ()
@@ -19657,19 +19644,51 @@ def install_local_physical_saturation_bridge (physical :types .ModuleType )->Non
                 normal .normalize ()
                 )
 
+            (
+            blocker_frame_start ,
+            blocker_frame_end ,
+            )=_collision_other_frame_segment (
+            blocker ,
+            dt ,
+            )
+
+            blocker_total_movement =(
+            blocker_frame_end 
+            -blocker_frame_start 
+            )
+
+            # time_span is already the remaining fraction after the hit.
+            # Resolve the residual in the moving blocker's frame so a
+            # NORMAL contacted by a moving Shepherd inherits its normal
+            # displacement instead of treating the Shepherd as stationary.
+            blocker_remaining =(
+            blocker_total_movement 
+            *time_span 
+            )
+
+            relative_residual =(
+            residual 
+            -blocker_remaining 
+            )
+
             inward =float (
-            residual .dot (
+            relative_residual .dot (
             normal 
             )
             )
 
-            slide =residual .copy ()
+            relative_slide =relative_residual .copy ()
 
             if inward <0.0 :
-                slide -=(
+                relative_slide -=(
                 normal 
                 *inward 
                 )
+
+            slide =(
+            blocker_remaining 
+            +relative_slide 
+            )
 
 
 
@@ -20458,6 +20477,7 @@ def install_local_physical_saturation_bridge (physical :types .ModuleType )->Non
                     probe_delta ,
                     other ,
                     probe_fraction ,
+                    allowed_compression =push_contact_compression,
                     ):
                         robot_blockers .append (
                         (
@@ -22628,7 +22648,7 @@ robots :Sequence [Any ],
         physical .JUNCTION_COHORT_MIN_ROBOTS ,len (all_ids )
         )
         descriptor .direction_downstream_travel =physical .JUNCTION_COHORT_MIN_TRAVEL 
-        descriptor .motion_frame_source ="LIDAR_FROZEN_MOUTH_UID_BOUND"
+        descriptor .motion_frame_source ="LOCALIZED_PHYSICAL_SIDE_WALLS"
         descriptor .motion_frame_sample_count =len (track .observations )
         descriptor .physical_boundary_sample_count =len (track .observations )
 
@@ -22709,7 +22729,7 @@ def log_wall_ready_blockers (physical :types .ModuleType ,perception :AdaptivePe
         status =physical .integration_wall_status .get (geometry .provisional_uid ,{})
         guards =[r for r in robots if r .robot_id in geometry .selected_ids ]
         complete =sum (sum (1 for r in guards if r .junction_guard_layer ==layer )>=geometry .columns for layer in range (geometry .layers ))
-        checks =[("settled_ratio",float (status .get ("settled_ratio",0.0 ))>=PROVISIONAL_WALL_SETTLED_RATIO ),("span_ratio",float (status .get ("min_span_ratio",0.0 ))>=float (physical .FRONTIER_LINE_MIN_SPAN_RATIO )),("edge_gap",float (status .get ("max_edge_gap",float ("inf")))<=float (physical .FRONTIER_LINE_MAX_EDGE_GAP )),("internal_gap",float (status .get ("max_internal_gap",float ("inf")))<=float (physical .FRONTIER_LINE_MAX_INTERNAL_GAP )),("slots_walkable",int (status .get ("slots_walkable",0 ))>=len (geometry .slots )),("complete_rows",complete ==geometry .layers )]
+        checks =[("span_ratio",float (status .get ("min_span_ratio",0.0 ))>=float (physical .FRONTIER_LINE_MIN_SPAN_RATIO )),("edge_gap",float (status .get ("max_edge_gap",float ("inf")))<=float (physical .FRONTIER_LINE_MAX_EDGE_GAP )),("internal_gap",float (status .get ("max_internal_gap",float ("inf")))<=float (physical .FRONTIER_LINE_MAX_INTERNAL_GAP )),("slots_walkable",int (status .get ("slots_walkable",0 ))>=len (geometry .slots )),("complete_rows",complete ==geometry .layers )]
         reasons =[name for name ,ok in checks if not ok ]
         print (f"[WallReadyBlocker] branch={geometry .local_branch_key or geometry .provisional_uid } guard_count={len (guards )} expected={len (geometry .slots )} rows={geometry .layers } columns={geometry .columns } complete_rows={complete } settled_ratio={status .get ('settled_ratio',0.0 ):.3f} min_span_ratio={status .get ('min_span_ratio',0.0 ):.3f} max_edge_gap={status .get ('max_edge_gap',float ('inf')):.3f} max_internal_gap={status .get ('max_internal_gap',float ('inf')):.3f} slots_walkable={status .get ('slots_walkable',0 )} ready={bool (status .get ('ready',False ))} blocking_reasons={reasons }")
 
@@ -24449,56 +24469,126 @@ robots :Sequence [Any ],
     return audit 
 
 
-def initialize_deployment_fields (
-physical :types .ModuleType ,
-robots :Sequence [Any ],
-)->dict [str ,float |int |bool ]:
-    audit =center_initial_grid_formation (physical ,robots )
-    for robot in robots :
-        robot .body_yaw =-0.5 *math .pi 
-        robot .propulsion_weight =adaptive .LOCAL_FOLLOWER_DRIVE_WEIGHT 
-        robot .heading_parent_id =None 
-        robot .heading_hop =0 
-    return audit 
+def initialize_deployment_fields(
+    physical: types.ModuleType,
+    robots: Sequence[Any],
+)->dict[str, float | int | bool]:
+    # Keep the original single-junction grid exactly; NORMAL positions are not
+    # repacked for the Multi-Junction deployment.
+
+    for robot in robots:
+        robot.body_yaw = -0.5 * math.pi
+        robot.propulsion_weight = adaptive.LOCAL_FOLLOWER_DRIVE_WEIGHT
+        robot.heading_parent_id = None
+        robot.heading_hop = 0
+
+    anchor =next (
+    (
+    robot 
+    for robot in robots 
+    if robot .robot_id ==LIDAR_ROBOT_ID 
+    ),
+    None ,
+    )
+    if anchor is None :
+        raise RuntimeError (
+        f"LiDAR Anchor {LIDAR_ROBOT_ID} not found"
+        )
+
+    anchor .is_lidar_robot =True 
+    anchor .is_fixed_anchor =False 
+    anchor .base_reserve =False 
+
+    normals =[
+    robot 
+    for robot in robots 
+    if robot is not anchor 
+    ]
+    front_y =min (robot .position .y for robot in normals )
+    front_row =[
+    robot 
+    for robot in normals 
+    if abs (robot .position .y -front_y )<=0.5 *physical .GRID_ROW_SPACING 
+    ]
+
+    target_gap =float (physical .integration_anchor_target_gap )
+    anchor_position =pygame .Vector2 (
+    physical .center_x ,
+    front_y -target_gap ,
+    )
+    if not physical .is_walkable (anchor_position ,anchor .radius ):
+        raise RuntimeError (
+        "Initial front-center Anchor position is not walkable: "
+        f"{anchor_position}"
+        )
+
+    anchor .position .update (anchor_position .x ,anchor_position .y )
+    anchor .previous_position =anchor .position .copy ()
+    anchor .velocity .update (0.0 ,0.0 )
+    anchor .acceleration .update (0.0 ,0.0 )
+    anchor .filtered_acceleration .update (0.0 ,0.0 )
+
+    if hasattr (anchor ,"commanded_velocity"):
+        anchor .commanded_velocity .update (0.0 ,0.0 )
+    if hasattr (anchor ,"observed_velocity"):
+        anchor .observed_velocity .update (0.0 ,0.0 )
+
+    print (
+    "[InitialGridPreserved] "
+    f"robots={len (robots )} "
+    f"anchor_id={anchor .robot_id } "
+    f"front_row={len (front_row )} "
+    f"anchor=({anchor .position .x :.2f},"
+    f"{anchor .position .y :.2f}) "
+    f"target_gap={target_gap :.2f} "
+    "normal_repack=False"
+    )
+
+    return {
+    "previous_front_count":len (front_row ),
+    "previous_center_robot":True ,
+    "front_count":len (front_row ),
+    "corridor_center_x":float (physical .center_x ),
+    "front_y":float (front_y ),
+    }
 
 
-def refresh_centered_deployment_physics (
-physical :types .ModuleType ,
-robots :Sequence [Any ],
-)->tuple [float ,float ]:
+
+def refresh_centered_deployment_physics(
+    physical: types.ModuleType,
+    robots: Sequence[Any],
+) -> tuple[float, float]:
     """Refresh density/communication after the whole-grid repack."""
 
-    physical .compute_densities (
-    robots ,
-    physical .build_physics_grid (robots ),
+    physical.compute_densities(
+        robots,
+        physical.build_physics_grid(robots),
     )
 
-    mean_density =float (
-    np .mean (
-    [robot .density for robot in robots ]
-    )
-    )
-
-    reference_density =(
-    physical .compute_reference_density_from_spacing (
-    physical .REFERENCE_EQUILIBRIUM_SPACING ,
-    physical .SMOOTHING_LENGTH ,
-    )
+    mean_density = float(
+        np.mean(
+            [robot.density for robot in robots]
+        )
     )
 
-    color_reference_density =(
-    mean_density *0.68 
+    # The initial grid is intentionally denser than the desired SPH equilibrium.
+    reference_density = (
+        physical.compute_reference_density_from_spacing(
+            physical.REFERENCE_EQUILIBRIUM_SPACING,
+            physical.SMOOTHING_LENGTH,
+        )
     )
 
-    physical .update_communication_system (
-    robots ,
-    physical .build_spatial_grid (robots ),
+    color_reference_density = (
+        mean_density * 0.68
     )
 
-    return (
-    reference_density ,
-    color_reference_density ,
+    physical.update_communication_system(
+        robots,
+        physical.build_spatial_grid(robots),
     )
+
+    return reference_density, color_reference_density
 
 
 def advance_guard_settling_waypoints (
@@ -24838,6 +24928,51 @@ physical :types .ModuleType ,
         if robot .robot_id not in boundary_ids 
         ]
 
+        return_phase =(
+        junction is not None
+        and junction .branch_phase in {
+        BranchPhase .PRESSURE_PUSH ,
+        BranchPhase .FLOW_BACKTRACK ,
+        }
+        )
+
+        if return_phase :
+            if junction .branch_phase ==BranchPhase .PRESSURE_PUSH :
+                return_speed =float (
+                physical .integration_child_pressure_push_speed
+                )
+            else :
+                return_speed =float (
+                physical .integration_child_flow_backtrack_speed
+                )
+
+            maximum_return_step =max (0.0 ,return_speed *dt )
+            # A blocked prior frame must not accumulate an unreachable return
+            # target.  Return motion is negative along the frozen tangent.
+            requested_delta =max (
+            -maximum_return_step ,
+            min (0.0 ,requested_delta ),
+            )
+
+        def is_pushable_return_normal (robot :Any )->bool :
+            """Movable return body: pushable, but never penetrable."""
+            return (
+            return_phase
+            and getattr (robot ,"role",None )=="NORMAL"
+            and not bool (getattr (robot ,"base_reserve",False ))
+            and not bool (getattr (robot ,"is_fixed_anchor",False ))
+            )
+
+        pushable_return_normals =[
+        robot for robot in external_robots
+        if is_pushable_return_normal (robot )
+        ]
+
+        hard_external_robots =[
+        robot for robot in external_robots
+        if not is_pushable_return_normal (robot )
+        ]
+
         hard_limit =float (
         getattr (
         physical ,
@@ -24846,11 +24981,20 @@ physical :types .ModuleType ,
         )
         )
 
+        # Pack-coupled depth control is the primary anti-tunnel mechanism.
+        # This is only a final center-crossing emergency guard.
+        emergency_min_center_gap =max (
+        1.05 *float (physical .ROBOT_RADIUS ),
+        float (physical .EPSILON ),
+        )
+
         def pair_step_is_safe (
         member :Any ,
         delta :pygame .Vector2 ,
         other :Any ,
         fraction :float ,
+        *,
+        allowed_compression :float =0.0,
         )->bool :
             other_radius =float (
             getattr (
@@ -24859,7 +25003,11 @@ physical :types .ModuleType ,
             physical .ROBOT_RADIUS ,
             )
             )
-            minimum_distance =float (member .radius )+other_radius 
+            rigid_minimum_distance =float (member .radius )+other_radius
+            minimum_distance =max (
+            physical .EPSILON ,
+            rigid_minimum_distance -max (0.0 ,allowed_compression ),
+            )
             other_delta =(
             getattr (other ,"velocity",pygame .Vector2 ())
             *dt 
@@ -24904,7 +25052,12 @@ physical :types .ModuleType ,
                 if not physical .is_walkable (candidate ,member .radius ):
                     return False 
 
-                for other in external_robots :
+                # Return-phase NORMAL robots, including the movable LiDAR
+                # Anchor, are the piston body.  They are driven by Shepherd
+                # contact forces and pack-coupled rear-surface control, not
+                # used as per-disc rigid-wall feasibility blockers here.
+
+                for other in hard_external_robots :
                     if not pair_step_is_safe (
                     member ,
                     delta ,
@@ -24947,6 +25100,155 @@ physical :types .ModuleType ,
                     high =middle 
 
             safe_fraction =low 
+
+        # A zero safe fraction alone is ambiguous: another robot or a
+        # communication parent can also stop the rigid boundary.  Probe the
+        # smallest forward displacement and retain only is_walkable() failures
+        # as physical wall evidence for the Multi-Junction dead-end detector.
+        rigid_wall_blocker_ids :list [int ]=[]
+        required_wall_blockers =max (
+        1 ,
+        int (math .ceil (
+        0.90 *max (1 ,int (lifecycle .get ("cols",0 )))
+        )),
+        )
+
+        if (
+        abs (requested_delta )>physical .EPSILON
+        and safe_fraction <0.001
+        ):
+            probe_fraction =1.0 /4096.0
+            probe_delta =tangent *requested_delta *probe_fraction
+
+            for member in members :
+                if not physical .is_walkable (
+                member .position +probe_delta ,
+                member .radius ,
+                ):
+                    rigid_wall_blocker_ids .append (member .robot_id )
+
+        lifecycle ["rigid_wall_blocked_count"]=len (
+        rigid_wall_blocker_ids
+        )
+        lifecycle ["rigid_wall_blocker_requirement"]=required_wall_blockers
+        lifecycle ["rigid_wall_blocked"]=(
+        len (rigid_wall_blocker_ids )>=required_wall_blockers
+        )
+
+        if (
+        abs (requested_delta )>physical .EPSILON 
+        and safe_fraction <0.001 
+        and frame %10 ==0 
+        ):
+            probe_fraction =1.0 /4096.0 
+            probe_delta =tangent *requested_delta *probe_fraction 
+            walkable_blockers =[]
+            hard_robot_blockers =[]
+            pushable_contact_diagnostics =[]
+            comm_blockers =[]
+
+            for member in members :
+                candidate =member .position +probe_delta 
+
+                if not physical .is_walkable (candidate ,member .radius ):
+                    walkable_blockers .append (
+                    (
+                    member .robot_id ,
+                    getattr (member ,"integration_guard_slot_index",-1 ),
+                    getattr (member ,"junction_guard_layer",-1 ),
+                    round (member .position .x ,3 ),
+                    round (member .position .y ,3 ),
+                    round (candidate .x ,3 ),
+                    round (candidate .y ,3 ),
+                    physical .is_walkable (
+                    member .position ,
+                    member .radius ,
+                    ),
+                    )
+                    )
+
+                for other in pushable_return_normals :
+                    other_radius =float (
+                    getattr (
+                    other ,"radius",physical .ROBOT_RADIUS
+                    )
+                    )
+                    allowed_emergency_compression =max (
+                    0.0 ,
+                    float (member .radius )+other_radius
+                    -emergency_min_center_gap ,
+                    )
+                    if not pair_step_is_safe (
+                    member ,
+                    probe_delta ,
+                    other ,
+                    probe_fraction ,
+                    allowed_compression =allowed_emergency_compression,
+                    ):
+                        pushable_contact_diagnostics .append (
+                        (
+                        member .robot_id ,
+                        other .robot_id ,
+                        )
+                        )
+
+                for other in hard_external_robots :
+                    if not pair_step_is_safe (
+                    member ,
+                    probe_delta ,
+                    other ,
+                    probe_fraction ,
+                    ):
+                        hard_robot_blockers .append (
+                        (
+                        member .robot_id ,
+                        other .robot_id ,
+                        getattr (other ,"role",None ),
+                        )
+                        )
+                        break 
+
+                parent =getattr (member ,"comm_parent",None )
+                if (
+                parent is not None 
+                and getattr (member ,"connected_to_base",False )
+                ):
+                    if getattr (parent ,"robot_id",None )in boundary_ids :
+                        parent_candidate =parent .position +probe_delta 
+                    else :
+                        parent_candidate =parent .position 
+
+                    parent_distance =candidate .distance_to (parent_candidate )
+                    if parent_distance >hard_limit :
+                        comm_blockers .append (
+                        (
+                        member .robot_id ,
+                        getattr (parent ,"robot_id",None ),
+                        round (parent_distance ,3 ),
+                        )
+                        )
+
+            print (
+            "[CurrentRigidBlockReason] "
+            f"frame={frame } "
+            f"branch={branch_uid } "
+            f"walkable={len (walkable_blockers )} "
+            f"walkable_ids={walkable_blockers [:8 ]} "
+            f"rigid_wall_blocked="
+            f"{lifecycle ['rigid_wall_blocked'] } "
+            f"rigid_wall_count="
+            f"{lifecycle ['rigid_wall_blocked_count'] }/"
+            f"{lifecycle ['rigid_wall_blocker_requirement'] } "
+            f"hard_robot={len (hard_robot_blockers )} "
+            f"hard_robot_pairs={hard_robot_blockers [:5 ]} "
+            f"pushable_contact_diag="
+            f"{len (pushable_contact_diagnostics )} "
+            f"pushable_contact_pairs="
+            f"{pushable_contact_diagnostics [:5 ]} "
+            f"comm={len (comm_blockers )} "
+            f"comm_pairs={comm_blockers [:5 ]} "
+            f"hard_limit={hard_limit :.3f}"
+            )
 
         actual_delta =requested_delta *safe_fraction 
         common_velocity =tangent *(
@@ -25275,6 +25577,10 @@ physical :types .ModuleType ,
 
         contact_count =0 
 
+        return_axis =(
+        descriptor .local_return_direction .normalize ()
+        )
+
         for shepherd in shepherds :
 
             delta =(
@@ -25286,26 +25592,19 @@ physical :types .ModuleType ,
             delta .length_squared ()
             )
 
+            contact_radius =max (
+            float (robot .radius )
+            +float (shepherd .radius )
+            +0.05 *radius ,
+            shell_ratio *radius ,
+            )
+
             if distance_sq <=physical .EPSILON :
-
-                contact_normal =(
-                descriptor .local_return_direction .normalize ()
-                )
-
                 distance =0.0 
-
+                contact_normal =return_axis .copy ()
             else :
-
                 distance =math .sqrt (
                 distance_sq 
-                )
-
-                contact_radius =max (
-                float (robot .radius )
-                +float (shepherd .radius )
-                +0.05 *radius ,
-
-                shell_ratio *radius ,
                 )
 
                 if distance >=contact_radius :
@@ -25314,6 +25613,11 @@ physical :types .ModuleType ,
                 contact_normal =(
                 delta /distance 
                 )
+
+                # A numerical overlap must never turn a return piston force
+                # toward the dead-end side of the Shepherd wall.
+                if contact_normal .dot (return_axis )<=0.0 :
+                    contact_normal =return_axis .copy ()
 
             compression =max (
             0.0 ,
@@ -25565,20 +25869,6 @@ physical :types .ModuleType ,
             tangent *drive_force 
             +normal *lateral_force 
             )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -26570,8 +26860,6 @@ branch_uid :str ,
         f"jump={max_jump :.9f}"
         )
 
-    lifecycle ["state"]="FILL"
-
     lifecycle [
     "frontier_to_shepherd_in_place"
     ]=True 
@@ -26580,16 +26868,71 @@ branch_uid :str ,
     "shepherd_shape_locked"
     ]=True 
 
+    # Begin physical return from the actually applied rigid-wall position,
+    # not from a Frontier target that may have been blocked earlier.
+    actual_return_depth =float (
+    lifecycle .get (
+    "rigid_applied_depth",
+    physical .integration_frontier_depth ,
+    )
+    )
+    physical .integration_frontier_depth =actual_return_depth
+    lifecycle ["backtrack_command_depth"]=actual_return_depth
+    lifecycle ["backtrack_pack_rear_depth"]=None
+    lifecycle ["backtrack_support_depth"]=None
+    lifecycle ["backtrack_support_count"]=0
+    lifecycle ["backtrack_lateral_coverage"]=0.0
+    lifecycle ["backtrack_mode"]="START"
 
+
+    # Dead-end was confirmed by persistent forward LiDAR blockage.  Start
+    # the physical piston immediately; this Multi-Junction path has no
+    # saturation/FILL gate.
+    lifecycle ["state"]="PRESSURE_PUSH"
 
     junction .branch_phase =(
-    BranchPhase .FILL 
+    BranchPhase .PRESSURE_PUSH
     )
 
-
+    # Keep the legacy physical authority synchronized with Multi-DFS while
+    # the same-ID Frontier wall is acting as the return piston.
+    physical .phase =(
+    physical .SimulationPhase .PRESSURE_PUSH
+    )
 
     physical .integration_child_dfs_phase =(
-    "FILL"
+    "PRESSURE_PUSH"
+    )
+
+    physical .integration_child_flow_dwell =0.0
+
+    disable_leading_anchor (physical )
+
+    perception =getattr (
+    physical ,
+    "integration_perception",
+    None ,
+    )
+
+    if perception is not None :
+        perception .anchor_fixed =False 
+        anchor =perception .leader 
+        anchor .is_fixed_anchor =False 
+        anchor .base_reserve =False 
+        if anchor .role not in {
+        "PEBBLE",
+        "JUNCTION_GUARD",
+        "SHEPHERD",
+        }:
+            anchor .role ="NORMAL"
+
+    # Re-evaluate rigid Shepherd transport under PRESSURE_PUSH next frame.
+    lifecycle ["rigid_cache_frame"]=-1
+
+    print (
+    "[ChildPressurePushImmediate] "
+    f"branch={branch_uid } "
+    "reason=LIDAR_DEAD_END_CONFIRMED"
     )
 
 
@@ -26823,6 +27166,11 @@ branch_uid :str ,
     physical .integration_child_dfs_phase =(
     "IDLE"
     )
+
+    physical .phase =(
+    physical .SimulationPhase .FORM_JUNCTION_GUARDS
+    )
+    physical .active_branch =None 
 
     disable_leading_anchor (
     physical 
@@ -27410,12 +27758,208 @@ dt :float ,
     )
 
 
+def current_branch_backtrack_support (
+physical :types .ModuleType ,
+robots :Sequence [Any ],
+branch_uid :str ,
+descriptor :Any ,
+lifecycle :dict [str ,Any ],
+)->dict [str ,Any ]:
+    """Measure full-width NORMAL support immediately ahead of this Shepherd.
+
+    This is a physical anti-tunnel measurement, not a saturation or phase gate.
+    It builds one rear-surface estimate per lateral lane of the frozen 3xN wall.
+    """
+
+    empty ={
+    "rear_depth":None,
+    "support_depth":None,
+    "support_count":0,
+    "coverage":0.0,
+    "broad_support":False,
+    "nearby_normal_count":0,
+    "minimum_axial_offset":0.0,
+    }
+
+    wall_ids =set (getattr (physical ,"integration_frontier_ids",set ()))
+    shepherds =[
+    robot for robot in robots
+    if (
+    robot .robot_id in wall_ids
+    and robot .role =="SHEPHERD"
+    and robot .shepherd_branch ==branch_uid
+    )
+    ]
+
+    if not shepherds :
+        return empty
+
+    offsets =lifecycle .get ("relative_offsets",{})
+    if not offsets :
+        return empty
+
+    axial_offsets =[
+    float (value [0 ])for value in offsets .values ()
+    ]
+    minimum_axial_offset =min (axial_offsets ,default =0.0)
+    applied_depth =float (
+    lifecycle .get (
+    "rigid_applied_depth",
+    physical .integration_frontier_depth ,
+    )
+    )
+    junction_face_depth =applied_depth +minimum_axial_offset
+
+    row_tolerance =max (
+    0.25 *float (physical .ROBOT_RADIUS ),
+    float (physical .EPSILON ),
+    )
+    face_row =[
+    shepherd for shepherd in shepherds
+    if abs (
+    float (offsets .get (shepherd .robot_id ,(0.0 ,0.0 ))[0 ])
+    -minimum_axial_offset
+    )<=row_tolerance
+    ]
+    if not face_row :
+        face_row =shepherds
+
+    tangent ,lateral_axis =physical .descriptor_local_basis (descriptor )
+    tangent =tangent .normalize ()
+    lateral_axis =lateral_axis .normalize ()
+    usable_half =max (
+    physical .local_physical_usable_half_width (descriptor ),
+    float (lifecycle .get ("usable_half_width",0.0)),
+    )
+    if usable_half <=physical .EPSILON :
+        return empty
+
+    cols =max (1 ,int (lifecycle .get ("cols",1)))
+    bin_count =max (5 ,cols)
+    contact_window =max (
+    float (physical .SHEPHERD_LOCAL_FLOW_DEPTH ),
+    6.0 *float (physical .ROBOT_RADIUS ),
+    )
+    face_tolerance =0.65 *float (physical .ROBOT_RADIUS )
+    lateral_limit =usable_half +float (physical .ROBOT_RADIUS )
+    samples_by_id :dict [int ,tuple [float ,float ]]={}
+    nearby_normal_ids :set [int ]=set ()
+
+    for shepherd in face_row :
+        shepherd_axial ,shepherd_lateral =offsets .get (
+        shepherd .robot_id ,(0.0 ,0.0)
+        )
+        observations =observe_local_neighbors (
+        shepherd ,
+        robots ,
+        tangent ,
+        lateral_axis =lateral_axis ,
+        max_range =physical .COMM_RANGE ,
+        predicate =lambda robot :(
+        robot .role =="NORMAL"
+        and not robot .base_reserve
+        and not bool (getattr (robot ,"is_fixed_anchor",False ))
+        ),
+        )
+
+        for observation in observations :
+            relative_axial =(
+            float (shepherd_axial )
+            +float (observation .relative_axial )
+            -minimum_axial_offset
+            )
+            relative_lateral =(
+            float (shepherd_lateral )
+            +float (observation .relative_lateral )
+            )
+
+            if (
+            relative_axial <=physical .ROBOT_RADIUS
+            and abs (relative_lateral)
+            <=usable_half +2.0 *physical .ROBOT_RADIUS
+            ):
+                nearby_normal_ids .add (observation .robot .robot_id)
+
+            if not (
+            -contact_window <=relative_axial <=face_tolerance
+            and abs (relative_lateral)<=lateral_limit
+            ):
+                continue
+
+            previous =samples_by_id .get (observation .robot .robot_id)
+            if previous is None or relative_axial >previous [0 ]:
+                samples_by_id [observation .robot .robot_id]=(
+                relative_axial ,relative_lateral
+                )
+
+    per_bin_depths :list [list [float ]]=[
+    []for _ in range (bin_count)
+    ]
+    for relative_axial ,relative_lateral in samples_by_id .values ():
+        u =(
+        relative_lateral +usable_half
+        )/max (2.0 *usable_half ,physical .EPSILON )
+        index =int (physical .clamp (u *bin_count ,0 ,bin_count -1))
+        per_bin_depths [index ].append (relative_axial)
+
+    occupied =[values for values in per_bin_depths if values]
+    coverage =len (occupied )/max (bin_count ,1)
+    base ={
+    "rear_depth":None,
+    "support_depth":None,
+    "support_count":0,
+    "coverage":coverage,
+    "broad_support":False,
+    "nearby_normal_count":len (nearby_normal_ids ),
+    "minimum_axial_offset":minimum_axial_offset,
+    }
+    if not occupied :
+        return base
+
+    lane_rears =[max (values )for values in occupied]
+    rear_relative =(
+    float (np .quantile (lane_rears ,0.90))
+    if len (lane_rears )>=5
+    else float (max (lane_rears ))
+    )
+    rear_depth =junction_face_depth +rear_relative
+    rear_band =max (
+    3.0 *physical .ROBOT_RADIUS ,
+    0.55 *physical .SAFE_RADIUS ,
+    )
+    support_count =sum (
+    1 for relative_axial ,_ in samples_by_id .values ()
+    if relative_axial >=rear_relative -rear_band
+    )
+    contact_center_gap =2.05 *physical .ROBOT_RADIUS
+    support_depth =(
+    rear_depth +contact_center_gap -minimum_axial_offset
+    )
+    minimum_support =max (
+    int (getattr (physical ,"FLOW_MIN_NORMAL_COUNT",8)),
+    int (math .ceil (cols *0.90)),
+    )
+    broad_support =(
+    coverage >=0.70
+    and support_count >=minimum_support
+    )
+    return {
+    "rear_depth":rear_depth,
+    "support_depth":support_depth,
+    "support_count":support_count,
+    "coverage":coverage,
+    "broad_support":broad_support,
+    "nearby_normal_count":len (nearby_normal_ids ),
+    "minimum_axial_offset":minimum_axial_offset,
+    }
+
+
 def update_current_shepherd_cycle (
 physical :types .ModuleType ,
 robots :Sequence [Any ],
 dt :float ,
 )->None :
-    """FILL -> PRESSURE_PUSH -> FLOW_BACKTRACK -> original Child Guard."""
+    """PRESSURE_PUSH -> FLOW_BACKTRACK -> original Child Guard."""
 
     junction =multi_dfs .current 
 
@@ -27469,221 +28013,6 @@ dt :float ,
     lifecycle ["child_shepherd_odometry_depth"]=odometry_depth 
     lifecycle ["child_shepherd_odometry_time"]=now 
 
-    if branch_phase ==BranchPhase .FILL :
-
-        metrics =current_branch_pack_metrics (
-        physical ,
-        robots ,
-        branch_uid ,
-        )
-
-        baseline_density =max (
-        float (
-        physical .integration_child_fill_baseline_density 
-        or physical .EPSILON 
-        ),
-        physical .EPSILON ,
-        )
-
-        baseline_pressure =max (
-        float (
-        physical .integration_child_fill_baseline_pressure 
-        or physical .EPSILON 
-        ),
-        physical .EPSILON ,
-        )
-
-        density_ratio =(
-        float (metrics ["mean_density"])
-        /baseline_density 
-        )
-
-        pressure_ratio =(
-        float (metrics ["mean_pressure"])
-        /baseline_pressure 
-        )
-
-        cols =max (
-        1 ,
-        int (
-        lifecycle .get (
-        "cols",
-        1 ,
-        )
-        ),
-        )
-
-        min_pack_count =max (
-        int (
-        getattr (
-        physical ,
-        "FLOW_MIN_NORMAL_COUNT",
-        6 ,
-        )
-        ),
-        int (
-        math .ceil (
-        2.0 *cols 
-        )
-        ),
-        )
-
-        min_coverage =max (
-        0.80 ,
-        float (
-        getattr (
-        physical ,
-        "SATURATION_PACKED_LATERAL_COVERAGE_RATIO",
-        0.70 ,
-        )
-        ),
-        )
-
-        pack_ready =(
-        int (metrics ["count"])
-        >=min_pack_count 
-        )
-
-        coverage_ready =(
-        float (metrics ["coverage"])
-        >=min_coverage 
-        )
-
-        low_speed_ratio =float (
-        metrics ["low_speed_ratio"]
-        )
-
-
-
-
-
-        stall_ready =(
-        low_speed_ratio 
-        >=0.40 
-        )
-
-        density_ready =(
-        density_ratio 
-        >=physical .SATURATION_DENSITY_RATIO 
-        )
-
-        pressure_ready =(
-        pressure_ratio 
-        >=LOCAL_SATURATION_PRESSURE_RATIO 
-        )
-
-        ready =(
-        pack_ready 
-        and coverage_ready 
-        and stall_ready 
-        and density_ready 
-        and pressure_ready 
-        )
-
-        if ready :
-            physical .integration_child_fill_dwell +=dt 
-        else :
-            physical .integration_child_fill_dwell =0.0 
-
-        frame =getattr (
-        physical ,
-        "integration_frame",
-        -1 ,
-        )
-
-        if frame %20 ==0 :
-            print (
-            "[ChildFill] "
-            f"branch={branch_uid } "
-            f"count={metrics ['count']} "
-            f"required={min_pack_count } "
-            f"pack_ready={pack_ready } "
-            f"coverage="
-            f"{float (metrics ['coverage']):.3f} "
-            f"coverage_ready={coverage_ready } "
-            f"density_ratio={density_ratio :.3f} "
-            f"density_ready={density_ready } "
-            f"pressure_ratio={pressure_ratio :.3f} "
-            f"pressure_ready={pressure_ready } "
-            f"low_speed={low_speed_ratio :.3f} "
-            f"stall_ready={stall_ready } "
-            f"ready={ready } "
-            f"dwell="
-            f"{physical .integration_child_fill_dwell :.3f}"
-            )
-
-        required_dwell =max (
-        0.18 ,
-        float (
-        getattr (
-        physical ,
-        "SATURATION_DWELL_TIME",
-        0.18 ,
-        )
-        ),
-        )
-
-        if (
-        physical .integration_child_fill_dwell 
-        <required_dwell 
-        ):
-            return 
-
-
-
-
-
-        print (
-        "[ChildSaturationConfirmed] "
-        f"branch={branch_uid } "
-        f"count={metrics ['count']} "
-        f"coverage={float (metrics ['coverage']):.3f} "
-        f"density_ratio={density_ratio :.3f} "
-        f"pressure_ratio={pressure_ratio :.3f} "
-        f"low_speed_ratio={low_speed_ratio :.3f} "
-        f"dwell={physical .integration_child_fill_dwell :.3f}"
-        )
-
-
-        disable_leading_anchor (physical )
-
-        if junction is not None :
-            junction .branch_phase =(
-            BranchPhase .PRESSURE_PUSH 
-            )
-
-
-
-        physical .integration_child_dfs_phase =(
-        "PRESSURE_PUSH"
-        )
-
-        lifecycle ["state"]=(
-        "PRESSURE_PUSH"
-        )
-
-        physical .integration_child_flow_dwell =(
-        0.0 
-        )
-
-        print (
-        "[ChildPressurePush] "
-        f"branch={branch_uid } "
-        f"count={metrics ['count']} "
-        f"coverage="
-        f"{float (metrics ['coverage']):.3f} "
-        f"density_ratio={density_ratio :.3f} "
-        f"pressure_ratio={pressure_ratio :.3f}"
-        )
-
-        return 
-
-
-
-
-
-
-
     if branch_phase not in {
     BranchPhase .PRESSURE_PUSH ,
     BranchPhase .FLOW_BACKTRACK ,
@@ -27711,9 +28040,19 @@ dt :float ,
     default =0.0 ,
     )
 
-    current_depth =float (
-    physical .integration_frontier_depth 
+    command_depth =float (
+    physical .integration_frontier_depth
     )
+
+    # Return commands must start from the physically applied rigid-wall
+    # position, never from an unreachable target left by a blocked frame.
+    applied_depth =float (
+    lifecycle .get (
+    "rigid_applied_depth",
+    command_depth ,
+    )
+    )
+    current_depth =applied_depth
 
     if "centroid_axial"not in lifecycle :
         raise RuntimeError (
@@ -27800,56 +28139,94 @@ dt :float ,
         physical .integration_child_flow_backtrack_speed 
         )
 
-    desired_depth =max (
-    original_guard_depth ,
-    current_depth 
-    -return_speed *dt ,
+    support =current_branch_backtrack_support (
+    physical ,robots ,branch_uid ,descriptor ,lifecycle
     )
+    rear_depth =support ["rear_depth"]
+    support_depth =support ["support_depth"]
+    support_count =int (support ["support_count"])
+    lateral_coverage =float (support ["coverage"])
+    broad_support =bool (support ["broad_support"])
+    nearby_normal_count =int (support ["nearby_normal_count"])
+    minimum_axial_offset =float (support ["minimum_axial_offset"])
 
+    # Generate every target from the actual rigid-wall position.  This avoids
+    # accumulating an unreachable command while the physical piston is held.
+    max_forward_step =max (0.0 ,return_speed *dt )
+    proposed_command =max (
+    original_guard_depth ,
+    current_depth -max_forward_step ,
+    )
+    hard_contact_floor =None
 
-    if normal_front is not None :
-
-        active_gap_ratio =float (
+    if broad_support and rear_depth is not None :
+        active_min_center_gap =max (
+        1.05 *physical .ROBOT_RADIUS ,
+        physical .ROBOT_RADIUS *float (
         getattr (
         physical ,
         "integration_child_active_min_center_gap_ratio",
         1.50 ,
         )
+        ),
         )
-
-        minimum_center_gap =(
-        active_gap_ratio 
-        *physical .ROBOT_RADIUS 
-        )
-
-        hard_floor =(
-        float (normal_front )
-        +minimum_center_gap 
-        -minimum_axial_offset 
-        )
-
-
-
-        hard_floor =min (
-        current_depth ,
-        hard_floor ,
-        )
-
-        next_depth =max (
-        desired_depth ,
-        hard_floor ,
+        hard_contact_floor =max (
         original_guard_depth ,
+        float (rear_depth )
+        +active_min_center_gap
+        -minimum_axial_offset ,
         )
 
+        # The contact floor is an approach limit only.  Once the full-width
+        # pack is contacted, keep advancing the piston toward the Junction;
+        # otherwise the full-width contact would self-lock the Shepherd.
+        if hard_contact_floor <current_depth -physical .EPSILON :
+            next_depth =max (proposed_command ,hard_contact_floor )
+            backtrack_mode ="FULL_WIDTH_APPROACH"
+        else :
+            if branch_phase ==BranchPhase .PRESSURE_PUSH :
+                active_scale =0.35 
+                backtrack_mode =(
+                "ACTIVE_FULL_WIDTH_COMPRESSION_PUSH"
+                )
+            else :
+                active_scale =0.60 
+                backtrack_mode =(
+                "ACTIVE_FULL_WIDTH_FLOW_BACKTRACK"
+                )
+
+            active_step =max_forward_step *active_scale 
+            next_depth =max (
+            original_guard_depth ,
+            current_depth -active_step ,
+            )
+    elif rear_depth is not None :
+        # A narrow set of contacted lanes must not freeze the complete 3xN
+        # wall.  Individual emergency disc checks still prevent tunnelling.
+        partial_command =max (
+        original_guard_depth ,
+        current_depth -max_forward_step *0.35,
+        )
+        next_depth =partial_command
+        backtrack_mode ="ACTIVE_PARTIAL_PUSH"
+    elif nearby_normal_count >0 :
+        next_depth =max (
+        original_guard_depth ,
+        current_depth -max_forward_step *0.35,
+        )
+        backtrack_mode ="SEEK_PACK"
     else :
+        next_depth =proposed_command
+        backtrack_mode ="RETURN_WITH_CLEAR_LOCAL_SPACE"
 
-        next_depth =(
-        desired_depth 
-        )
-
-    physical .integration_frontier_depth =(
-    next_depth 
-    )
+    next_depth =max (original_guard_depth ,float (next_depth ))
+    physical .integration_frontier_depth =next_depth
+    lifecycle ["backtrack_command_depth"]=next_depth
+    lifecycle ["backtrack_pack_rear_depth"]=rear_depth
+    lifecycle ["backtrack_support_depth"]=support_depth
+    lifecycle ["backtrack_support_count"]=support_count
+    lifecycle ["backtrack_lateral_coverage"]=lateral_coverage
+    lifecycle ["backtrack_mode"]=backtrack_mode
 
 
 
@@ -28008,6 +28385,9 @@ dt :float ,
             )
             branch_phase =junction .branch_phase 
 
+            physical .phase =(
+            physical .SimulationPhase .FLOW_BACKTRACK
+            )
 
 
             physical .integration_child_dfs_phase =(
@@ -28069,8 +28449,6 @@ dt :float ,
         f"branch={branch_uid } "
         f"phase={branch_phase .name } "
         f"return_speed={return_speed :.3f} "
-        f"active_gap="
-        f"{minimum_center_gap if normal_front is not None else -1.0 :.3f} "
         f"contact_normals="
         f"{len (child_contact_robots )} "
         f"max_contact_force="
@@ -28087,8 +28465,15 @@ dt :float ,
         f"depth={current_depth :.3f}"
         f"->{next_depth :.3f} "
         f"original_guard_depth={original_guard_depth :.3f} "
-        f"normal_front="
-        f"{float (normal_front )if normal_front is not None else -1.0 :.3f} "
+        f"pack_rear="
+        f"{float (rear_depth )if rear_depth is not None else -1.0 :.3f} "
+        f"support_depth="
+        f"{float (support_depth )if support_depth is not None else -1.0 :.3f} "
+        f"support_count={support_count } "
+        f"coverage={lateral_coverage :.3f} "
+        f"hard_floor="
+        f"{float (hard_contact_floor )if hard_contact_floor is not None else -1.0 :.3f} "
+        f"mode={backtrack_mode } "
         f"branch_normals={len (branch_normals )} "
         f"moving_ratio={moving_ratio :.3f} "
         f"mean_return_speed={mean_return_speed :.3f}"
@@ -28184,6 +28569,191 @@ dt :float ,
     robots ,
     branch_uid ,
     )
+
+
+def resolve_current_return_contacts (
+physical :types .ModuleType ,
+robots :Sequence [Any ],
+dt :float ,
+iterations :int =8,
+)->None :
+    """Coupled non-penetration projection for the kinematic return piston.
+
+    Shepherds remain a rigid kinematic wall.  Movable NORMAL robots (including
+    the released LiDAR Anchor) are projected as one packed body after their
+    individual updates, so piston pressure propagates through adjacent layers
+    without allowing a NORMAL to remain on the dead-end side of the wall.
+    """
+    junction =multi_dfs .current 
+    if (
+    junction is None 
+    or junction .branch_phase not in {
+    BranchPhase .PRESSURE_PUSH ,
+    BranchPhase .FLOW_BACKTRACK ,
+    }
+    ):
+        return 
+
+    branch_uid =junction .active_branch_uid 
+    descriptor =(
+    physical .branch_descriptors_by_uid .get (branch_uid )
+    if branch_uid is not None else None 
+    )
+    if descriptor is None :
+        return 
+
+    shepherd_ids =set (getattr (physical ,"integration_frontier_ids",set ()))
+    shepherds =[
+    robot for robot in robots 
+    if (
+    robot .robot_id in shepherd_ids 
+    and robot .role =="SHEPHERD"
+    and robot .shepherd_branch ==branch_uid 
+    )
+    ]
+    movable_normals =[
+    robot for robot in robots 
+    if (
+    robot .role =="NORMAL"
+    and not robot .base_reserve 
+    and not bool (getattr (robot ,"is_fixed_anchor",False ))
+    )
+    ]
+    if not shepherds or not movable_normals :
+        return 
+
+    return_axis =descriptor .local_return_direction .normalize ()
+    _,lateral_axis =physical .descriptor_local_basis (descriptor )
+    lateral_axis =lateral_axis .normalize ()
+    radius =float (physical .ROBOT_RADIUS )
+    piston_center_gap =1.95 *radius 
+    recovery_back_band =4.0 *radius 
+    maximum_projection_step =0.35 *radius 
+    frame_start_by_id =getattr (
+    physical ,"integration_collision_frame_start_by_id",{}
+    )
+    corrections =0 
+    max_correction =0.0 
+
+    for _ in range (iterations ):
+        piston_face =max (
+        float (shepherd .position .dot (return_axis ))
+        for shepherd in shepherds 
+        )
+        shepherd_laterals =[
+        float (shepherd .position .dot (lateral_axis ))
+        for shepherd in shepherds 
+        ]
+        lateral_min =min (shepherd_laterals )-radius 
+        lateral_max =max (shepherd_laterals )+radius 
+        required_normal_axial =piston_face +piston_center_gap 
+
+        # One-sided piston constraint: projected bodies must stay Junction-side
+        # of the active Shepherd face, but remote unrelated robots are untouched.
+        for robot in movable_normals :
+            lateral_position =float (robot .position .dot (lateral_axis ))
+            if not lateral_min -radius <=lateral_position <=lateral_max +radius :
+                continue 
+            axial_position =float (robot .position .dot (return_axis ))
+            if axial_position <piston_face -recovery_back_band :
+                continue 
+            penetration =required_normal_axial -axial_position 
+            if penetration <=0.0 :
+                continue 
+            correction =min (penetration ,maximum_projection_step )
+            candidate =robot .position +return_axis *correction 
+            if physical .is_walkable (candidate ,robot .radius ):
+                robot .position =candidate 
+                corrections +=1 
+                max_correction =max (max_correction ,correction )
+
+        # Iteratively propagate that correction through the packed NORMAL body.
+        cell_size =max (2.0 *radius ,physical .EPSILON )
+        cells :dict [tuple [int,int],list [Any ]]={}
+        for robot in movable_normals :
+            key =(
+            int (math .floor (robot .position .x /cell_size )),
+            int (math .floor (robot .position .y /cell_size )),
+            )
+            cells .setdefault (key,[]).append (robot )
+
+        checked_pairs :set [tuple [int,int]]=set ()
+        for (cell_x,cell_y),members in cells .items ():
+            candidates =[
+            candidate for dx in (-1,0,1) for dy in (-1,0,1)
+            for candidate in cells .get ((cell_x +dx,cell_y +dy),[])
+            ]
+            for robot_a in members :
+                for robot_b in candidates :
+                    if robot_a is robot_b :
+                        continue 
+                    pair =(
+                    min (robot_a .robot_id,robot_b .robot_id),
+                    max (robot_a .robot_id,robot_b .robot_id),
+                    )
+                    if pair in checked_pairs :
+                        continue 
+                    checked_pairs .add (pair)
+                    delta =robot_b .position -robot_a .position 
+                    distance_sq =delta .length_squared ()
+                    minimum_distance =float (robot_a .radius )+float (robot_b .radius )
+                    if distance_sq >=minimum_distance *minimum_distance :
+                        continue 
+                    if distance_sq <=physical .EPSILON :
+                        direction =lateral_axis .copy ()
+                        if robot_a .robot_id >robot_b .robot_id :
+                            direction *=-1.0 
+                        distance =0.0 
+                    else :
+                        distance =math .sqrt (distance_sq)
+                        direction =delta /distance 
+                    overlap =minimum_distance -distance 
+                    if overlap <=0.0 :
+                        continue 
+                    half =0.5 *overlap 
+                    candidate_a =robot_a .position -direction *half 
+                    candidate_b =robot_b .position +direction *half 
+                    a_ok =physical .is_walkable (candidate_a,robot_a .radius )
+                    b_ok =physical .is_walkable (candidate_b,robot_b .radius )
+                    applied =0.0 
+                    if a_ok and b_ok :
+                        robot_a .position =candidate_a 
+                        robot_b .position =candidate_b 
+                        applied =half 
+                    elif a_ok :
+                        candidate_a =robot_a .position -direction *overlap 
+                        if physical .is_walkable (candidate_a,robot_a .radius ):
+                            robot_a .position =candidate_a 
+                            applied =overlap 
+                    elif b_ok :
+                        candidate_b =robot_b .position +direction *overlap 
+                        if physical .is_walkable (candidate_b,robot_b .radius ):
+                            robot_b .position =candidate_b 
+                            applied =overlap 
+                    if applied >0.0 :
+                        corrections +=1 
+                        max_correction =max (max_correction ,applied )
+
+    # Projection is actual motion; expose it to the backflow gate.
+    for robot in movable_normals :
+        frame_start =frame_start_by_id .get (robot .robot_id)
+        if frame_start is None :
+            continue 
+        actual_velocity =(
+        robot .position -pygame .Vector2 (frame_start )
+        )/max (dt,physical .EPSILON )
+        robot .velocity =actual_velocity .copy ()
+        robot .observed_velocity =actual_velocity .copy ()
+
+    frame =int (getattr (physical ,"integration_frame",-1 ))
+    if frame %10 ==0 :
+        print (
+        "[ReturnContactSolve] "
+        f"frame={frame } branch={branch_uid } "
+        f"phase={junction .branch_phase .name } iterations={iterations } "
+        f"corrections={corrections } max_correction={max_correction :.3f} "
+        f"shepherds={len (shepherds )} movable_normals={len (movable_normals )}"
+        )
 
 
 def update_current_frontier_exploration (
@@ -28307,101 +28877,21 @@ dt :float ,
 
 
 
-    usable_half =(
-    physical .local_physical_usable_half_width (
-    descriptor 
-    )
-    )
-
-    offsets =physical .integration_frontier_offsets 
-    reference =min (
-    frontier_members ,
-    key =lambda robot :sum (
-    abs (float (value ))
-    for value in offsets .get (robot .robot_id ,(0.0 ,0.0 ))
-    ),
-    )
-    reference_axial ,reference_lateral =offsets .get (
-    reference .robot_id ,(0.0 ,0.0 )
-    )
-    normal_observations =[
-    observation 
-    for observation in observe_local_neighbors (
-    reference ,
-    robots ,
-    descriptor .local_outgoing_direction ,
-    lateral_axis =physical .descriptor_local_basis (descriptor )[1 ],
-    max_range =physical .COMM_RANGE ,
-    predicate =lambda robot :robot .role =="NORMAL",
-    )
-    if observation .relative_axial 
-    >=-physical .FRONTIER_LINE_LEAD_GAP -float (reference_axial )
-    and abs (
-    observation .relative_lateral +float (reference_lateral )
-    )<=usable_half 
-    ]
-
-    if not normal_observations :
-        return 
-
-    supported_relative_front =(
-    physical .linear_quantile (
-    [
-    observation .relative_axial 
-    for observation in normal_observations 
-    ],
-    float (
-    physical .integration_frontier_support_quantile 
-    ),
-    )
-    )
-
-
-
-
-
-
-
-
-
-    axial_offsets =[
-    float (value [0 ])
-    for value in offsets .values ()
-    ]
-
-    trailing_offset =min (
-    axial_offsets ,
-    default =0.0 ,
-    )
-
-    desired_depth =(
-    float (physical .integration_frontier_depth )
-    +float (reference_axial )
-    +supported_relative_front 
-    +physical .FRONTIER_LINE_LEAD_GAP 
-    -trailing_offset 
-    )
-
     current_depth =float (
     physical .integration_frontier_depth 
     )
 
-    next_depth =min (
-    desired_depth ,
-    current_depth 
+    # Frontier exploration is odometric.  NORMAL robots are expected to
+    # trail the Frontier, so their observed front must not gate its command.
+    # Rigid transport still enforces walkability, collision, and communication
+    # constraints when applying this requested depth.
+    next_depth =(
+    current_depth
     +float (
-    physical .integration_frontier_cruise_speed 
+    physical .integration_frontier_cruise_speed
     )
-    *dt ,
+    *dt
     )
-
-
-
-    next_depth =max (
-    current_depth ,
-    next_depth ,
-    )
-
 
 
     physical .integration_frontier_depth =(
@@ -28429,7 +28919,6 @@ dt :float ,
     branch_phase =junction .branch_phase 
 
     if branch_phase in {
-    BranchPhase .FILL ,
     BranchPhase .PRESSURE_PUSH ,
     BranchPhase .FLOW_BACKTRACK ,
     }:
@@ -28451,10 +28940,15 @@ dt :float ,
     if branch_phase !=BranchPhase .FRONTIER_BOOTSTRAP :
         return 
 
-    lifecycle =physical .integration_wall_lifecycle .get (uid )
+    lifecycle =current_junction_branch_lifecycle (
+    physical ,
+    junction ,
+    uid ,
+    )
     if lifecycle is None :
         raise RuntimeError (
         "Current Frontier lifecycle disappeared: "
+        f"junction={junction .junction_uid } "
         f"uid={uid }"
         )
 
@@ -29121,20 +29615,27 @@ def main (argv :Sequence [str ]|None =None )->int :
 
 
 
-            physical .compute_sph_forces (
-            robots ,
-            physics_grid ,
-            spatial_grid ,
-            dt ,
+            physical.compute_sph_forces(
+                robots,
+                physics_grid,
+                spatial_grid,
+                dt,
             )
 
-            apply_post_anchor_normal_crawl (
+            control_initial_mobile_anchor (
             physical ,
             perception ,
             robots ,
             )
 
             if not final_return_control_active :
+
+                enforce_junction_entry_anchor_lead (
+                physical ,
+                perception ,
+                robots ,
+                dt ,
+                )
 
                 maintain_anchor_breakout (
                 physical ,
@@ -29193,11 +29694,7 @@ def main (argv :Sequence [str ]|None =None )->int :
             is not None 
             )
 
-            if not anchor_motion_active :
-                apply_junction_approach_crawl (
-                physical ,
-                perception ,
-                )
+
 
             physical .integration_collision_frame_start_by_id ={
             robot .robot_id :
@@ -29226,7 +29723,40 @@ def main (argv :Sequence [str ]|None =None )->int :
             "samples":[],
             }
 
-            for robot in robots :
+            junction_for_update =multi_dfs .current 
+
+            return_update_phase =bool (
+            junction_for_update is not None 
+            and junction_for_update .branch_phase in {
+            BranchPhase .PRESSURE_PUSH ,
+            BranchPhase .FLOW_BACKTRACK ,
+            }
+            )
+
+            if return_update_phase :
+                rigid_return_ids =set (
+                getattr (
+                physical ,
+                "integration_frontier_ids",
+                set (),
+                )
+                )
+
+                robot_update_order =sorted (
+                robots ,
+                key =lambda robot :(
+                0 
+                if (
+                robot .robot_id in rigid_return_ids 
+                and robot .role =="SHEPHERD"
+                )
+                else 1 
+                ),
+                )
+            else :
+                robot_update_order =robots 
+
+            for robot in robot_update_order :
                 if (
                 perception .anchor_fixed 
                 and robot is perception .leader 
@@ -29443,6 +29973,16 @@ def main (argv :Sequence [str ]|None =None )->int :
                     displacement ,
                     )
 
+            # Individual motion limits have run.  Couple the moving Shepherd
+            # piston and the complete movable NORMAL pack once per frame.
+            if return_update_phase :
+                resolve_current_return_contacts (
+                physical ,
+                robots ,
+                dt ,
+                iterations =8,
+                )
+
             collision_stats =getattr (
             physical ,
             "integration_universal_collision_stats",
@@ -29471,7 +30011,10 @@ def main (argv :Sequence [str ]|None =None )->int :
 
 
 
-            if not final_return_control_active :
+            if (
+            not final_return_control_active 
+            and not return_update_phase
+            ):
 
                 enforce_anchor_fan_no_overtake (
                 physical ,
