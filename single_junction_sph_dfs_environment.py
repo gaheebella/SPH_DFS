@@ -654,21 +654,19 @@ PRESSURE_PUSH_MAX_SPEED = 42.0 * MOTION_SPEED_MULTIPLIER
 FLOW_BACKTRACK_MAX_SPEED = 52.0 * MOTION_SPEED_MULTIPLIER
 EPSILON = 1e-8
 
-INITIAL_INGRESS_FORCE = 2.5 * MOTION_SPEED_MULTIPLIER
-BASE_COMPRESSION_DURATION = 0.65
+INITIAL_INGRESS_FORCE = 0.0
+BASE_COMPRESSION_DURATION = 0.00
 INITIAL_SAFETY_WINDOW_DURATION = 3.20
-BASE_COMPRESSION_FORCE = 80.0 * MOTION_SPEED_MULTIPLIER
+BASE_COMPRESSION_FORCE = 0.0
 BASE_COMPRESSION_RISE_FRACTION = 0.20
 BASE_COMPRESSION_FALL_START_FRACTION = 0.80
 INITIAL_SAFETY_PRESSURE_FORCE_LIMIT = 260.0 * MOTION_SPEED_MULTIPLIER
 INITIAL_SAFETY_VISCOSITY_MULTIPLIER = 1.35
 INITIAL_SAFETY_EXTRA_DAMPING = 6.0
 INITIAL_SAFETY_ACCELERATION_FILTER_ALPHA = 0.12
-INITIAL_INGRESS_LANE_GAIN = 0.25
-INITIAL_INGRESS_LANE_MAX_FORCE = 5.0
-# Blind straight-ahead probe along the incoming corridor heading.  The target
-# lies beyond the Junction envelope, but it does not assert that an opening is
-# present; successful physical crossing is still required by the detector.
+INITIAL_INGRESS_LANE_GAIN = 0.00
+INITIAL_INGRESS_LANE_MAX_FORCE = 0.0
+
 INITIAL_INGRESS_TARGET_Y = (
     center_y - half_width - 18.0 * MAP_SCALE
 )
@@ -1242,28 +1240,45 @@ def is_region_allowed(position: pygame.Vector2) -> bool:
     return region in {"BOTTOM", "JUNCTION", "UP", "LEFT", "RIGHT"}
 
 
+def _point_to_wall_segment_distance_squared(
+    point: pygame.Vector2,
+    start: pygame.Vector2,
+    end: pygame.Vector2,
+) -> float:
+    """Continuous distance from a robot centre to one physical wall segment."""
+    segment = end - start
+    length_sq = segment.length_squared()
+
+    if length_sq <= EPSILON:
+        return point.distance_squared_to(start)
+
+    t = (point - start).dot(segment) / length_sq
+    t = clamp(t, 0.0, 1.0)
+    closest = start + segment * t
+    return point.distance_squared_to(closest)
+
+
 def is_walkable(position: pygame.Vector2, radius: float) -> bool:
-    x = int(round(position.x))
-    y = int(round(position.y))
-    pixel_radius = max(1, int(round(radius)))
-    diagonal = int(round(pixel_radius / math.sqrt(2.0)))
-    test_points = [
-        (x, y),
-        (x + pixel_radius, y),
-        (x - pixel_radius, y),
-        (x, y + pixel_radius),
-        (x, y - pixel_radius),
-        (x + diagonal, y + diagonal),
-        (x + diagonal, y - diagonal),
-        (x - diagonal, y + diagonal),
-        (x - diagonal, y - diagonal),
-    ]
-    for px, py in test_points:
-        if not (0 <= px < SCREEN_WIDTH and 0 <= py < SCREEN_HEIGHT):
+    """Require the whole circular robot body to remain inside the physical map."""
+    if not is_region_allowed(position):
+        return False
+
+    clearance = float(radius) + 0.50
+    clearance_sq = clearance * clearance
+    point = pygame.Vector2(position)
+
+    for index in range(len(cross_points)):
+        start = pygame.Vector2(cross_points[index])
+        end = pygame.Vector2(
+            cross_points[(index + 1) % len(cross_points)]
+        )
+        if (
+            _point_to_wall_segment_distance_squared(point, start, end)
+            <= clearance_sq
+        ):
             return False
-        if walkable_mask.get_at((px, py)) == 0:
-            return False
-    return is_region_allowed(position)
+
+    return True
 
 
 def constrain_base_reserve_to_bottom(robot: "Robot") -> None:
@@ -2032,7 +2047,6 @@ class Robot:
                         False,
                     )
                 )
-                and pending_branch_start is None
                 and self.junction_guard_layer >= 0
             )
 
@@ -2389,7 +2403,7 @@ class Robot:
         if base_station is not None and self.role != "BASE" and not self.connected_to_base:
             color = DISCONNECTED_FILL_COLOR
 
-        draw_radius = max(1, round(self.radius + 1))
+        draw_radius = max(1, round(self.radius))
         pygame.draw.circle(surface, color, (x, y), draw_radius)
         if self.role == "NORMAL" and not show_density_color:
             pygame.draw.circle(
@@ -5694,6 +5708,7 @@ def select_trunk_relay_candidate(robots, slot):
         robot
         for robot in robots
         if robot.role == "NORMAL"
+        and not getattr(robot, "is_lidar_robot", False)
         and robot.connected_to_base
         and get_robot_region(robot.position) in {"BOTTOM", "JUNCTION"}
         and robot.position.distance_to(slot["position"]) <= TRUNK_RELAY_SELECTION_RADIUS
@@ -5920,6 +5935,7 @@ def select_relay_candidate(robots, slot):
         robot
         for robot in robots
         if robot.role == "NORMAL"
+        and not getattr(robot, "is_lidar_robot", False)
         and robot.connected_to_base
         and get_robot_region(robot.position) in {"JUNCTION", active_branch}
         and robot.position.distance_to(slot["position"]) <= RELAY_SELECTION_RADIUS
@@ -7384,6 +7400,8 @@ def compute_proxy_mass_statistics(
     robot_assignment: dict[int, str] = {}
     total_mass = 0.0
     for robot in robots:
+        if getattr(robot, "is_lidar_robot", False):
+            continue
         proxy_point = project_robot_to_proxy(robot.position)
         cell = nearest_proxy_cell(proxy_point, centers)
         if cell is None or cell not in partition:
@@ -7604,6 +7622,7 @@ def get_branch_ordering_robots(robots) -> list["Robot"]:
         robot
         for robot in robots
         if robot.role == "NORMAL"
+        and not getattr(robot, "is_lidar_robot", False)
         and robot.connected_to_base
         and get_robot_region(robot.position) != "OUTSIDE"
     ]
@@ -7616,6 +7635,7 @@ def get_branch_ordering_robots(robots) -> list["Robot"]:
         robot
         for robot in robots
         if robot.role == "NORMAL"
+        and not getattr(robot, "is_lidar_robot", False)
         and get_robot_region(robot.position) != "OUTSIDE"
     ]
 
@@ -11084,9 +11104,15 @@ def compute_densities(robots, grid):
     self_contribution = spiky_kernel(0.0, SMOOTHING_LENGTH)
     h_sq = SMOOTHING_LENGTH**2
     for robot_i in robots:
+        if getattr(robot_i, "is_lidar_robot", False):
+            robot_i.density = self_contribution
+            continue
+
         density = self_contribution
         for robot_j in iter_physics_neighbor_candidates(robot_i, grid):
             if robot_i is robot_j or robot_j.role == "PEBBLE":
+                continue
+            if getattr(robot_j, "is_lidar_robot", False):
                 continue
             distance_sq = robot_i.position.distance_squared_to(robot_j.position)
             if distance_sq <= h_sq:
@@ -11334,6 +11360,11 @@ def compute_initial_junction_soft_wall_force(
 
 def compute_pressures(robots, reference_density):
     for robot in robots:
+        if getattr(robot, "is_lidar_robot", False):
+            robot.density_ratio = 1.0
+            robot.pressure = 0.0
+            continue
+
         ratio = robot.density / max(reference_density, EPSILON)
         robot.density_ratio = ratio
         robot.pressure = (
@@ -12119,6 +12150,16 @@ def compute_sph_forces(
     h_sq = SMOOTHING_LENGTH**2
     checked_pairs = set()
     for robot_i in robots:
+        if getattr(robot_i, "is_lidar_robot", False):
+            robot_i.acceleration.update(0.0, 0.0)
+            robot_i.last_sph_pressure_force = 0.0
+            robot_i.last_goal_force = 0.0
+            robot_i.last_pebble_guidance_force = 0.0
+            robot_i.last_pebble_guidance_weight = 0.0
+            robot_i.last_pebble_guidance_mode = "NONE"
+            robot_i.last_pebble_guidance_branch_uid = None
+            continue
+
         if robot_i.role in {
             "PEBBLE",
             "RELAY",
@@ -12172,9 +12213,25 @@ def compute_sph_forces(
 
             if distance_sq <= EPSILON or distance_sq > h_sq:
                 continue
+
+            distance = math.sqrt(distance_sq)
+            repulsion_force += (
+                REPULSION_GAIN
+                * (
+                    1.0
+                    / max(distance, SAFE_RADIUS) ** 2
+                )
+                * (
+                    r_ij
+                    / (distance + EPSILON)
+                )
+            )
+
+            if getattr(robot_j, "is_lidar_robot", False):
+                continue
+
             neighbor_count += 1
             neighbor_center += robot_j.position
-            distance = math.sqrt(distance_sq)
             direction_away = r_ij / distance
             gradient = spiky_gradient(r_ij, SMOOTHING_LENGTH)
             coefficient = (
@@ -12192,18 +12249,6 @@ def compute_sph_forces(
                 mean_density = 0.5 * (robot_i.density + robot_j.density)
                 pi_ij = (-VISCOSITY_XI1 * c_ij * mu_ij + VISCOSITY_XI2 * mu_ij**2) / max(mean_density, EPSILON)
                 viscosity_force += -pi_ij * gradient
-            repulsion_force += (
-                REPULSION_GAIN
-                * (
-                    1.0
-                    / max(distance, SAFE_RADIUS) ** 2
-                )
-                * (
-                    r_ij
-                    / (distance + EPSILON)
-                )
-            )
-
             # A JUNCTION_GUARD communicates only its branch-facing orientation.
             # A nearby NORMAL uses that local message and relative position to
             # move toward the Junction. Overlapping influence disks across the
