@@ -9188,7 +9188,7 @@ descriptor :Any ,
 
     mouth_half =0.5 *float (descriptor .observed_physical_width )
     wall_clearance =max (
-    3.0 *physical .ROBOT_RADIUS ,
+    2.80 *physical .ROBOT_RADIUS ,
     physical .ROBOT_RADIUS +0.50 ,
     )
     center_half =max (
@@ -25066,19 +25066,23 @@ physical :types .ModuleType ,
                     ):
                         return False 
 
-                parent =getattr (member ,"comm_parent",None )
+                # A return piston may re-parent after the communication graph
+                # is rebuilt below.  Do not deadlock the whole rigid wall on
+                # one exploration-era parent edge at the hard range limit.
+                if not return_phase :
+                    parent =getattr (member ,"comm_parent",None )
 
-                if (
-                parent is not None 
-                and getattr (member ,"connected_to_base",False )
-                ):
-                    if getattr (parent ,"robot_id",None )in boundary_ids :
-                        parent_candidate =parent .position +delta 
-                    else :
-                        parent_candidate =parent .position 
+                    if (
+                    parent is not None 
+                    and getattr (member ,"connected_to_base",False )
+                    ):
+                        if getattr (parent ,"robot_id",None )in boundary_ids :
+                            parent_candidate =parent .position +delta 
+                        else :
+                            parent_candidate =parent .position 
 
-                    if candidate .distance_to (parent_candidate )>hard_limit :
-                        return False 
+                        if candidate .distance_to (parent_candidate )>hard_limit :
+                            return False 
 
             return True 
 
@@ -25208,25 +25212,26 @@ physical :types .ModuleType ,
                         )
                         break 
 
-                parent =getattr (member ,"comm_parent",None )
-                if (
-                parent is not None 
-                and getattr (member ,"connected_to_base",False )
-                ):
-                    if getattr (parent ,"robot_id",None )in boundary_ids :
-                        parent_candidate =parent .position +probe_delta 
-                    else :
-                        parent_candidate =parent .position 
+                if not return_phase :
+                    parent =getattr (member ,"comm_parent",None )
+                    if (
+                    parent is not None 
+                    and getattr (member ,"connected_to_base",False )
+                    ):
+                        if getattr (parent ,"robot_id",None )in boundary_ids :
+                            parent_candidate =parent .position +probe_delta 
+                        else :
+                            parent_candidate =parent .position 
 
-                    parent_distance =candidate .distance_to (parent_candidate )
-                    if parent_distance >hard_limit :
-                        comm_blockers .append (
-                        (
-                        member .robot_id ,
-                        getattr (parent ,"robot_id",None ),
-                        round (parent_distance ,3 ),
-                        )
-                        )
+                        parent_distance =candidate .distance_to (parent_candidate )
+                        if parent_distance >hard_limit :
+                            comm_blockers .append (
+                            (
+                            member .robot_id ,
+                            getattr (parent ,"robot_id",None ),
+                            round (parent_distance ,3 ),
+                            )
+                            )
 
             print (
             "[CurrentRigidBlockReason] "
@@ -29195,7 +29200,7 @@ dt :float ,
     f"runtime={runtime_kind }"
     )
 
-
+# 반복되는 브랜치 탐색 공통 사이클
 def update_current_branch_cycle (
 physical :types .ModuleType ,
 perception :AdaptivePerception ,
