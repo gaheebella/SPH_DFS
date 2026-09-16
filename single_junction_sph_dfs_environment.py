@@ -16,6 +16,14 @@ from typing import Optional
 
 import pygame
 
+LIBRARY_MODE = (
+    os.environ.get(
+        "SPH_DFS_LIBRARY_MODE",
+        "0",
+    )
+    == "1"
+)
+
 
 pygame.init()
 
@@ -584,9 +592,15 @@ ROBOT_RADIUS = 1.60 * MAP_SCALE
 GRID_SPACING = 4.00 * MAP_SCALE
 GRID_ROW_SPACING = 3.80 * MAP_SCALE
 
-SMOOTHING_LENGTH = 22.0 * MAP_SCALE
-PRESSURE_GAIN = 2800.0
-STIFFNESS_EXPONENT = 0.2
+# Keep the initial lattice clear of both Base-corridor side walls so early
+# SPH expansion has lateral room before any wall contact.
+INITIAL_GRID_SIDE_MARGIN = 8.0 * MAP_SCALE
+
+# Keep signed-pressure interaction active through the communication-safe span.
+SMOOTHING_LENGTH = 46.0 * MAP_SCALE
+PRESSURE_GAIN = 3100.0
+# Preserve a meaningful signed-pressure response below reference density.
+STIFFNESS_EXPONENT = 0.8
 VISCOSITY_XI1 = 0.9
 VISCOSITY_XI2 = 1.2
 MOTION_SPEED_MULTIPLIER = 4.5
@@ -595,6 +609,7 @@ SAFE_RADIUS = 7.5 * MAP_SCALE
 REPULSION_GAIN = 260.0
 NORMAL_EQUILIBRIUM_SCALE = 1.48
 
+# 기준 평형 로봇 간격
 REFERENCE_EQUILIBRIUM_SPACING = max(
     GRID_SPACING,
     SAFE_RADIUS * NORMAL_EQUILIBRIUM_SCALE,
@@ -1259,11 +1274,11 @@ def _point_to_wall_segment_distance_squared(
 
 
 def is_walkable(position: pygame.Vector2, radius: float) -> bool:
-    """Require the whole circular robot body to remain inside the physical map."""
+    """Allow exact wall contact; reject only circular-body penetration."""
     if not is_region_allowed(position):
         return False
 
-    clearance = float(radius) + 0.50
+    clearance = float(radius)
     clearance_sq = clearance * clearance
     point = pygame.Vector2(position)
 
@@ -1272,10 +1287,12 @@ def is_walkable(position: pygame.Vector2, radius: float) -> bool:
         end = pygame.Vector2(
             cross_points[(index + 1) % len(cross_points)]
         )
-        if (
-            _point_to_wall_segment_distance_squared(point, start, end)
-            <= clearance_sq
-        ):
+        wall_distance_sq = _point_to_wall_segment_distance_squared(
+            point,
+            start,
+            end,
+        )
+        if wall_distance_sq < clearance_sq:
             return False
 
     return True
@@ -1314,16 +1331,10 @@ def constrain_final_return_gate_crossing(
 
 
 def wall_collision_velocity(component: float) -> float:
-    """Apply a small, damped rebound during pressure-driven forward flow."""
-    if (
-        phase in {
-            SimulationPhase.MOVE_TO_JUNCTION,
-            SimulationPhase.EXPLORE_BRANCH,
-        }
-        and simulation_time >= BASE_COMPRESSION_DURATION
-    ):
-        return -component * INITIAL_WALL_RESTITUTION
-    return 0.0
+    """Reflect the wall-normal velocity component in every phase."""
+    if abs(component) <= EPSILON:
+        return 0.0
+    return -component * INITIAL_WALL_RESTITUTION
 
 
 def is_mask_clear_at(position: pygame.Vector2, clearance: float = 0.0) -> bool:
@@ -2328,7 +2339,9 @@ class Robot:
                 return
 
         self.velocity += self.acceleration * dt
-        if self.role in {"NORMAL", "FRONTIER_SHEPHERD"}:
+        # Only the rigid Frontier/Shepherd formation needs corridor-lateral
+        # damping.  NORMAL robots remain free to deform under SPH.
+        if self.role == "FRONTIER_SHEPHERD":
             region = get_robot_region(self.position)
             lateral_decay = math.exp(
                 -CORRIDOR_LATERAL_VELOCITY_DAMPING * dt
@@ -2995,6 +3008,7 @@ def build_frontier_line_local_slots(
     descriptor: BranchDescriptor,
     count: int,
     axial_depth: float,
+    fit_walkable: bool = True,
 ) -> list[pygame.Vector2]:
     """Build the persistent frontier row in the Branch's observed local frame.
 
@@ -3017,6 +3031,8 @@ def build_frontier_line_local_slots(
         for offset in lateral_offsets
     ]
     if (
+        fit_walkable
+        and
         is_walkable(row_center, ROBOT_RADIUS)
         and not all(is_walkable(slot, ROBOT_RADIUS) for slot in slots)
     ):
@@ -3521,6 +3537,7 @@ def run_diagonal_local_guard_synthetic_validation() -> None:
         locked_descriptor,
         7,
         40.0,
+        fit_walkable=False,
     )
     frontier_center = local_coordinates_to_world(
         locked_descriptor,
@@ -4774,9 +4791,26 @@ def resolve_local_frontier_handoff_depth(
 
 def create_grid_robots(robot_count: int):
     robots = []
-    left = center_x - half_width + ROBOT_RADIUS + 4 * MAP_SCALE
-    right = center_x + half_width - ROBOT_RADIUS - 4 * MAP_SCALE
-    top = center_y + half_width + 12 * MAP_SCALE
+    usable_left = (
+        center_x
+        - half_width
+        + ROBOT_RADIUS
+        + INITIAL_GRID_SIDE_MARGIN
+    )
+    usable_right = (
+        center_x
+        + half_width
+        - ROBOT_RADIUS
+        - INITIAL_GRID_SIDE_MARGIN
+    )
+    # 초기 시작 위치 결정
+    # grid 가 차지할 수 있는 위쪽 한계
+    top = (
+        center_y
+        + half_width
+        + 12 * MAP_SCALE
+    )
+    # Base 아래쪽 시작 위치
     bottom = (
         center_y
         + half_width
@@ -4784,15 +4818,38 @@ def create_grid_robots(robot_count: int):
         - ROBOT_RADIUS
         - 7 * MAP_SCALE
     )
-    per_row = max(1, int((right - left) // GRID_SPACING) + 1)
+    # 현재 corridor 폭과 GRID_SPACING을 이용해서 한 row에 최대 몇 대를 놓을지 계산
+    per_row = max(
+        1,
+        int((usable_right - usable_left) // GRID_SPACING) + 1,
+    )
+    # Robot ID를 (몇 번째 row, 그 row의 몇 번째 column)으로 변환
     for robot_id in range(robot_count):
-        row, column = divmod(robot_id, per_row)
-        x = left + column * GRID_SPACING
+        row, column = divmod(
+            robot_id,
+            per_row,
+        )
+        row_start = row * per_row
+        row_count = min(
+            per_row,
+            robot_count - row_start,
+        )
+        row_width = (row_count - 1) * GRID_SPACING
+        row_left = center_x - 0.5 * row_width
+        x = row_left + column * GRID_SPACING
         y = bottom - row * GRID_ROW_SPACING
+
         if y < top:
-            print(f"Warning: only {len(robots)} robots fit in the entrance.")
+            print(
+                f"Warning: only {len(robots)} "
+                "robots fit in the entrance."
+            )
             break
-        robots.append(Robot(x, y, robot_id))
+
+        robots.append(
+            Robot(x, y, robot_id)
+        )
+
     return robots
 
 
@@ -7471,52 +7528,7 @@ def get_lane_preserving_cohort_direction(
     branch: str,
     final_target: Optional[pygame.Vector2] = None,
 ) -> pygame.Vector2:
-    """Route a whole-width cohort through the Junction without center collapse.
-
-    The spawn-lane x coordinate is continuously mapped to a lateral Branch
-    coordinate.  Robots therefore turn as parallel streamlines instead of all
-    aiming at the same branch-mouth point.
-    """
-    region = get_robot_region(robot.position)
-    lane_offset = get_cohort_lane_offset(robot)
-
-    if region == "BOTTOM":
-        target = pygame.Vector2(
-            center_x + lane_offset,
-            center_y + half_width - FILL_LANE_LOOKAHEAD * 0.35,
-        )
-        return normalized_direction_toward(robot.position, target)
-
-    if region == "JUNCTION":
-        if branch == "UP":
-            target = pygame.Vector2(
-                center_x + lane_offset,
-                center_y - half_width - FILL_LANE_LOOKAHEAD,
-            )
-        elif branch == "LEFT":
-            target = pygame.Vector2(
-                center_x - half_width - FILL_LANE_LOOKAHEAD,
-                center_y + lane_offset,
-            )
-        else:
-            target = pygame.Vector2(
-                center_x + half_width + FILL_LANE_LOOKAHEAD,
-                center_y + lane_offset,
-            )
-        return normalized_direction_toward(robot.position, target)
-
-    if region == branch:
-        axial_target = (
-            final_target.copy()
-            if final_target is not None
-            else get_branch_tip_target(branch)
-        )
-        if branch == "UP":
-            axial_target.x = center_x + lane_offset
-        else:
-            axial_target.y = center_y + lane_offset
-        return normalized_direction_toward(robot.position, axial_target)
-
+    """Route direction without preserving the initial deployment lane."""
     return geodesic_edf_direction(
         robot.position,
         branch,
@@ -8170,19 +8182,25 @@ def evaluate_flow_preserving_rollout(
                     accelerations[i] += viscosity_force
                     accelerations[j] -= viscosity_force
 
-                repulsion = (
-                    REPULSION_GAIN
-                    * (
-                        1.0
-                        / max(distance, SAFE_RADIUS) ** 2
+                direction_away = r_ij / (distance + EPSILON)
+
+                # Match the real SPH dynamics: explicit repulsion protects
+                # only true safety-distance penetrations, while signed
+                # pressure regulates density and cohesion otherwise.
+                if distance < SAFE_RADIUS:
+                    penetration_ratio = (
+                        SAFE_RADIUS - distance
+                    ) / max(
+                        SAFE_RADIUS,
+                        EPSILON,
                     )
-                    * (
-                        r_ij
-                        / (distance + EPSILON)
+                    repulsion = (
+                        REPULSION_GAIN
+                        * penetration_ratio
+                        * direction_away
                     )
-                )
-                accelerations[i] += repulsion
-                accelerations[j] -= repulsion
+                    accelerations[i] += repulsion
+                    accelerations[j] -= repulsion
 
         for index, particle in enumerate(particles):
             region = get_robot_region(particle.position)
@@ -11282,24 +11300,30 @@ def update_initial_release_flow_event(
 
 
 def initial_safety_conditioning_active() -> bool:
-    """Keep shock guards until timeout or the event-triggered decay finishes."""
-    if phase not in {
-        SimulationPhase.MOVE_TO_JUNCTION,
-        SimulationPhase.EXPLORE_BRANCH,
-    }:
+    """Apply temporary conditioning only after initial Base ingress."""
+
+    # Base -> J0 구간에서는 SPH를 처음부터 그대로 사용한다.
+    if phase == SimulationPhase.MOVE_TO_JUNCTION:
         return False
+
+    # 기존 EXPLORE_BRANCH safety logic은 유지한다.
+    if phase != SimulationPhase.EXPLORE_BRANCH:
+        return False
+
     if simulation_time < BASE_COMPRESSION_DURATION:
         return False
+
     if initial_release_event_time is not None:
         return (
             simulation_time - initial_release_event_time
             < INITIAL_RELEASE_EVENT_DECAY_TIME
         )
+
     return (
         simulation_time
-        < BASE_COMPRESSION_DURATION + INITIAL_SAFETY_WINDOW_DURATION
+        < BASE_COMPRESSION_DURATION
+        + INITIAL_SAFETY_WINDOW_DURATION
     )
-
 
 def get_base_compression_envelope() -> float:
     """Fast smooth rise, sustained compression, then a smooth release."""
@@ -11818,13 +11842,6 @@ def compute_route_force(robot):
                 force.y = (
                     -INITIAL_INGRESS_FORCE * scale * route_multiplier
                 )
-            if region == "BOTTOM":
-                lane_error = robot.ingress_lane_x - robot.position.x
-                force.x = clamp(
-                    INITIAL_INGRESS_LANE_GAIN * lane_error,
-                    -INITIAL_INGRESS_LANE_MAX_FORCE,
-                    INITIAL_INGRESS_LANE_MAX_FORCE,
-                )
     elif phase == SimulationPhase.FORM_JUNCTION_GUARDS:
         if region in BRANCHES:
             force = normalized_direction_toward(
@@ -12081,63 +12098,14 @@ def compute_route_force(robot):
                 * RETURN_EGRESS_FORCE
                 * RETURN_STRAGGLER_FORCE_MULTIPLIER
             )
-            lane_error = robot.ingress_lane_x - robot.position.x
-            force.x += clamp(
-                RETURN_LANE_GAIN * lane_error,
-                -RETURN_LANE_MAX_FORCE,
-                RETURN_LANE_MAX_FORCE,
-            )
         else:
             bottom_target = get_bottom_hold_point()
             y_distance = bottom_target.y - robot.position.y
             if y_distance > 0.0:
                 scale = max(RETURN_MIN_FORCE_SCALE, min(1.0, y_distance / RETURN_BRAKE_DISTANCE))
                 force.y = RETURN_EGRESS_FORCE * scale
-            lane_error = robot.ingress_lane_x - robot.position.x
-            force.x = clamp(RETURN_LANE_GAIN * lane_error, -RETURN_LANE_MAX_FORCE, RETURN_LANE_MAX_FORCE)
 
     force += compute_backtrack_bridge_force(robot)
-
-    cohort_phase = phase in {
-        SimulationPhase.EXPLORE_BRANCH,
-        SimulationPhase.FORM_SHEPHERD_BOUNDARY,
-        SimulationPhase.FILL_BEHIND_SHEPHERD,
-    }
-    lane_offset = (
-        get_cohort_lane_offset(robot)
-        if cohort_phase
-        and (
-            region in {"BOTTOM", "JUNCTION"}
-            or region == active_branch
-        )
-        else 0.0
-    )
-    if region in {"UP", "BOTTOM"}:
-        lateral_target = center_x + (
-            lane_offset
-            if region == "BOTTOM" or region == active_branch
-            else 0.0
-        )
-        force.x += CENTERING_GAIN * (
-            lateral_target - robot.position.x
-        )
-    elif region in {"LEFT", "RIGHT"}:
-        lateral_target = center_y + (
-            lane_offset if region == active_branch else 0.0
-        )
-        lateral_error = lateral_target - robot.position.y
-        if (
-            phase == SimulationPhase.FILL_BEHIND_SHEPHERD
-            and robot.role == "NORMAL"
-            and region == active_branch
-        ):
-            force.y += clamp(
-                FILL_BRANCH_LANE_CENTERING_GAIN * lateral_error,
-                -FILL_BRANCH_LANE_FORCE_LIMIT,
-                FILL_BRANCH_LANE_FORCE_LIMIT,
-            )
-        else:
-            force.y += CENTERING_GAIN * lateral_error
     return force
 
 
@@ -12215,24 +12183,29 @@ def compute_sph_forces(
                 continue
 
             distance = math.sqrt(distance_sq)
-            repulsion_force += (
-                REPULSION_GAIN
-                * (
-                    1.0
-                    / max(distance, SAFE_RADIUS) ** 2
+            direction_away = r_ij / (distance + EPSILON)
+
+            # Keep the explicit collision term local to true safety-distance
+            # penetrations.  Density regulation and cohesion outside this
+            # range remain the responsibility of signed SPH pressure.
+            if distance < SAFE_RADIUS:
+                penetration_ratio = (
+                    SAFE_RADIUS - distance
+                ) / max(
+                    SAFE_RADIUS,
+                    EPSILON,
                 )
-                * (
-                    r_ij
-                    / (distance + EPSILON)
+                repulsion_force += (
+                    REPULSION_GAIN
+                    * penetration_ratio
+                    * direction_away
                 )
-            )
 
             if getattr(robot_j, "is_lidar_robot", False):
                 continue
 
             neighbor_count += 1
             neighbor_center += robot_j.position
-            direction_away = r_ij / distance
             gradient = spiky_gradient(r_ij, SMOOTHING_LENGTH)
             coefficient = (
                 robot_i.pressure / max(robot_i.density**2, EPSILON)
@@ -12323,6 +12296,28 @@ def compute_sph_forces(
             robot_i,
             route_force,
         )
+        junction_ingress_normal = (
+            robot_i.role == "NORMAL"
+            and bool(
+                globals().get(
+                    "integration_junction_ingress_active",
+                    False,
+                )
+            )
+        )
+        if junction_ingress_normal:
+            # Preserve the common translation injected by the multi-Junction
+            # ingress controller while retaining SPH-relative forces.
+            absolute_damping = 0.0
+        else:
+            absolute_damping = (
+                DAMPING
+                + (
+                    INITIAL_SAFETY_EXTRA_DAMPING
+                    if release_active
+                    else 0.0
+                )
+            )
         total = (
             sph_force
             + goal_force
@@ -12331,15 +12326,7 @@ def compute_sph_forces(
             + contact_obstacle_force
             + decision_guidance_force
             + initial_junction_wall_force
-            - (
-                DAMPING
-                + (
-                    INITIAL_SAFETY_EXTRA_DAMPING
-                    if release_active
-                    else 0.0
-                )
-            )
-            * robot_i.velocity
+            - absolute_damping * robot_i.velocity
         )
         acceleration_limit = (
             INITIAL_SAFE_MAX_ACCELERATION
@@ -13589,801 +13576,805 @@ def initialize_simulation():
     )
     return robots, reference_density, color_reference_density
 
+if not LIBRARY_MODE:
+    robots, reference_density, color_reference_density = initialize_simulation()
 
-robots, reference_density, color_reference_density = initialize_simulation()
+    # =========================================================
+    # 18. Main loop
+    # =========================================================
 
-# =========================================================
-# 18. Main loop
-# =========================================================
-
-running = True
-paused = False
-headless_fast = os.environ.get("SPH_DFS_HEADLESS_FAST", "0") == "1"
-headless_max_frames = int(os.environ.get("SPH_DFS_MAX_FRAMES", "0"))
-headless_frame_dt = float(
-    os.environ.get("SPH_DFS_HEADLESS_DT", str(1.0 / FPS))
-)
-headless_frame_count = 0
-capture_directory_value = os.environ.get("SPH_DFS_CAPTURE_DIR", "")
-capture_directory = (
-    Path(capture_directory_value)
-    if capture_directory_value
-    else None
-)
-capture_last_signature = None
-if capture_directory is not None:
-    capture_directory.mkdir(parents=True, exist_ok=True)
-def wrap_hud_text(text: str, font_obj, max_width: int):
-    """Wrap one HUD string to the width of the separate side panel."""
-    words = text.split()
-    if not words:
-        return [""]
-    lines = []
-    current = words[0]
-    for word in words[1:]:
-        candidate = f"{current} {word}"
-        if font_obj.size(candidate)[0] <= max_width:
-            current = candidate
-        else:
-            lines.append(current)
-            current = word
-    lines.append(current)
-    return lines
-
-
-def draw_hud_panel(surface, lines):
-    panel_rect = pygame.Rect(
-        HUD_PANEL_X,
-        0,
-        HUD_PANEL_WIDTH,
-        SCREEN_HEIGHT,
+    # ``final_pdfs.py`` imports this module to reuse the original Robot/SPH
+    # implementation.  Keep the simulation loop disabled only for that library
+    # use; direct execution retains the existing behavior.
+    running = os.environ.get("SPH_DFS_LIBRARY_MODE", "0") != "1"
+    paused = False
+    headless_fast = os.environ.get("SPH_DFS_HEADLESS_FAST", "0") == "1"
+    headless_max_frames = int(os.environ.get("SPH_DFS_MAX_FRAMES", "0"))
+    headless_frame_dt = float(
+        os.environ.get("SPH_DFS_HEADLESS_DT", str(1.0 / FPS))
     )
-    pygame.draw.rect(surface, HUD_PANEL_COLOR, panel_rect)
-    pygame.draw.line(
-        surface,
-        HUD_PANEL_BORDER_COLOR,
-        (HUD_PANEL_X, 0),
-        (HUD_PANEL_X, SCREEN_HEIGHT),
-        width=2,
+    headless_frame_count = 0
+    capture_directory_value = os.environ.get("SPH_DFS_CAPTURE_DIR", "")
+    capture_directory = (
+        Path(capture_directory_value)
+        if capture_directory_value
+        else None
     )
+    capture_last_signature = None
+    if capture_directory is not None:
+        capture_directory.mkdir(parents=True, exist_ok=True)
+    def wrap_hud_text(text: str, font_obj, max_width: int):
+        """Wrap one HUD string to the width of the separate side panel."""
+        words = text.split()
+        if not words:
+            return [""]
+        lines = []
+        current = words[0]
+        for word in words[1:]:
+            candidate = f"{current} {word}"
+            if font_obj.size(candidate)[0] <= max_width:
+                current = candidate
+            else:
+                lines.append(current)
+                current = word
+        lines.append(current)
+        return lines
 
-    x = HUD_PANEL_X + HUD_PANEL_MARGIN
-    y = 12
-    max_width = HUD_PANEL_WIDTH - 2 * HUD_PANEL_MARGIN
-    line_height = hud_font.get_linesize() + 2
 
-    for line in lines:
-        wrapped = wrap_hud_text(line, hud_font, max_width)
-        for wrapped_line in wrapped:
+    def draw_hud_panel(surface, lines):
+        panel_rect = pygame.Rect(
+            HUD_PANEL_X,
+            0,
+            HUD_PANEL_WIDTH,
+            SCREEN_HEIGHT,
+        )
+        pygame.draw.rect(surface, HUD_PANEL_COLOR, panel_rect)
+        pygame.draw.line(
+            surface,
+            HUD_PANEL_BORDER_COLOR,
+            (HUD_PANEL_X, 0),
+            (HUD_PANEL_X, SCREEN_HEIGHT),
+            width=2,
+        )
+
+        x = HUD_PANEL_X + HUD_PANEL_MARGIN
+        y = 12
+        max_width = HUD_PANEL_WIDTH - 2 * HUD_PANEL_MARGIN
+        line_height = hud_font.get_linesize() + 2
+
+        for line in lines:
+            wrapped = wrap_hud_text(line, hud_font, max_width)
+            for wrapped_line in wrapped:
+                if y + line_height >= SCREEN_HEIGHT - 72:
+                    break
+                surface.blit(hud_font.render(wrapped_line, True, TEXT_COLOR), (x, y))
+                y += line_height
             if y + line_height >= SCREEN_HEIGHT - 72:
                 break
-            surface.blit(hud_font.render(wrapped_line, True, TEXT_COLOR), (x, y))
-            y += line_height
-        if y + line_height >= SCREEN_HEIGHT - 72:
-            break
 
-    controls = [
-        "SPACE pause | R reset | D density",
-        "V regions | C communication | ESC quit",
-    ]
-    controls_y = SCREEN_HEIGHT - 58
-    for control in controls:
-        surface.blit(hud_font.render(control, True, TEXT_COLOR), (x, controls_y))
-        controls_y += line_height
+        controls = [
+            "SPACE pause | R reset | D density",
+            "V regions | C communication | ESC quit",
+        ]
+        controls_y = SCREEN_HEIGHT - 58
+        for control in controls:
+            surface.blit(hud_font.render(control, True, TEXT_COLOR), (x, controls_y))
+            controls_y += line_height
 
 
-show_density_color = SHOW_DENSITY_COLOR_DEFAULT
-show_regions = True
-show_comm_links = SHOW_COMM_LINKS_DEFAULT
-communication_frame_counter = 0
+    show_density_color = SHOW_DENSITY_COLOR_DEFAULT
+    show_regions = True
+    show_comm_links = SHOW_COMM_LINKS_DEFAULT
+    communication_frame_counter = 0
 
 
-while running:
-    raw_dt = (
-        headless_frame_dt
-        if headless_fast
-        else max(clock.tick(FPS) / 1000.0, 1.0 / 240.0)
-    )
-    headless_frame_count += 1
-    if headless_fast and phase == SimulationPhase.DONE:
-        print(
-            f"[Headless] frames={headless_frame_count}, phase=DONE, "
-            f"pebbles={len(get_pebbles(robots))}, "
-            f"visited={sorted(observed_visited_branches(robots))}"
+    while running:
+        raw_dt = (
+            headless_frame_dt
+            if headless_fast
+            else max(clock.tick(FPS) / 1000.0, 1.0 / 240.0)
         )
-        running = False
-        continue
-    if headless_max_frames and headless_frame_count > headless_max_frames:
-        print(
-            f"[Headless] frames={headless_max_frames}, phase={phase.name}, "
-            f"pebbles={len(get_pebbles(robots))}, "
-            f"visited={sorted(observed_visited_branches(robots))}"
-        )
-        running = False
-        continue
-    frame_dt = min(
-        raw_dt,
-        INITIAL_INGRESS_MAX_DT if phase == SimulationPhase.MOVE_TO_JUNCTION else NORMAL_PHYSICS_MAX_DT,
-    )
-
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
-        elif event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_SPACE:
-                paused = not paused
-            elif event.key == pygame.K_r:
-                robots, reference_density, color_reference_density = initialize_simulation()
-            elif event.key == pygame.K_d:
-                show_density_color = not show_density_color
-            elif event.key == pygame.K_v:
-                show_regions = not show_regions
-            elif event.key == pygame.K_c:
-                show_comm_links = not show_comm_links
-            elif event.key == pygame.K_ESCAPE:
-                running = False
-
-    spatial_grid = build_spatial_grid(robots)
-    if not paused:
-        simulation_time += frame_dt
-        communication_frame_counter += 1
-        substep_dt = frame_dt / SUBSTEPS
-        for _ in range(SUBSTEPS):
-            physics_grid = build_physics_grid(robots)
-            compute_densities(robots, physics_grid)
-            update_transfer_continuity_control(robots)
-            compute_pressures(robots, reference_density)
-            compute_sph_forces(
-                robots,
-                physics_grid,
-                spatial_grid,
-                substep_dt,
+        headless_frame_count += 1
+        if headless_fast and phase == SimulationPhase.DONE:
+            print(
+                f"[Headless] frames={headless_frame_count}, phase=DONE, "
+                f"pebbles={len(get_pebbles(robots))}, "
+                f"visited={sorted(observed_visited_branches(robots))}"
             )
-            for robot in robots:
-                robot.update(substep_dt)
-        # Rebuild immediately after distributed role changes such as a
-        # Breadcrumb or Shepherd self-election.
+            running = False
+            continue
+        if headless_max_frames and headless_frame_count > headless_max_frames:
+            print(
+                f"[Headless] frames={headless_max_frames}, phase={phase.name}, "
+                f"pebbles={len(get_pebbles(robots))}, "
+                f"visited={sorted(observed_visited_branches(robots))}"
+            )
+            running = False
+            continue
+        frame_dt = min(
+            raw_dt,
+            INITIAL_INGRESS_MAX_DT if phase == SimulationPhase.MOVE_TO_JUNCTION else NORMAL_PHYSICS_MAX_DT,
+        )
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_SPACE:
+                    paused = not paused
+                elif event.key == pygame.K_r:
+                    robots, reference_density, color_reference_density = initialize_simulation()
+                elif event.key == pygame.K_d:
+                    show_density_color = not show_density_color
+                elif event.key == pygame.K_v:
+                    show_regions = not show_regions
+                elif event.key == pygame.K_c:
+                    show_comm_links = not show_comm_links
+                elif event.key == pygame.K_ESCAPE:
+                    running = False
+
         spatial_grid = build_spatial_grid(robots)
-        update_communication_system(robots, spatial_grid)
-        update_simulation_state(robots, frame_dt, reference_density, spatial_grid)
-        update_metrics_per_frame(robots, frame_dt)
-    else:
-        update_communication_system(robots, spatial_grid)
-        compute_densities(robots, build_physics_grid(robots))
-        compute_pressures(robots, reference_density)
+        if not paused:
+            simulation_time += frame_dt
+            communication_frame_counter += 1
+            substep_dt = frame_dt / SUBSTEPS
+            for _ in range(SUBSTEPS):
+                physics_grid = build_physics_grid(robots)
+                compute_densities(robots, physics_grid)
+                update_transfer_continuity_control(robots)
+                compute_pressures(robots, reference_density)
+                compute_sph_forces(
+                    robots,
+                    physics_grid,
+                    spatial_grid,
+                    substep_dt,
+                )
+                for robot in robots:
+                    robot.update(substep_dt)
+            # Rebuild immediately after distributed role changes such as a
+            # Breadcrumb or Shepherd self-election.
+            spatial_grid = build_spatial_grid(robots)
+            update_communication_system(robots, spatial_grid)
+            update_simulation_state(robots, frame_dt, reference_density, spatial_grid)
+            update_metrics_per_frame(robots, frame_dt)
+        else:
+            update_communication_system(robots, spatial_grid)
+            compute_densities(robots, build_physics_grid(robots))
+            compute_pressures(robots, reference_density)
 
-    # Headless verification exercises the identical physics/state/metrics
-    # path above; only rasterization and display presentation are skipped.
-    if headless_fast:
-        if capture_directory is None:
-            continue
-        capture_probe_signature = (
-            phase.name,
-            active_branch,
-            junction_guard_status
-            if phase == SimulationPhase.FORM_JUNCTION_GUARDS
-            else "-",
-            int(frontier_line_depth // max(40.0 * MAP_SCALE, 1.0))
-            if phase == SimulationPhase.EXPLORE_BRANCH
-            else -1,
-            dead_end_inference_tracker.confirmed,
-        )
-        if capture_probe_signature == capture_last_signature:
-            continue
+        # Headless verification exercises the identical physics/state/metrics
+        # path above; only rasterization and display presentation are skipped.
+        if headless_fast:
+            if capture_directory is None:
+                continue
+            capture_probe_signature = (
+                phase.name,
+                active_branch,
+                junction_guard_status
+                if phase == SimulationPhase.FORM_JUNCTION_GUARDS
+                else "-",
+                int(frontier_line_depth // max(40.0 * MAP_SCALE, 1.0))
+                if phase == SimulationPhase.EXPLORE_BRANCH
+                else -1,
+                dead_end_inference_tracker.confirmed,
+            )
+            if capture_probe_signature == capture_last_signature:
+                continue
 
-    screen.fill(BACKGROUND_COLOR)
-    pygame.draw.polygon(screen, FLOOR_COLOR, cross_points)
-    draw_branch_colour_fields(screen)
-    pygame.draw.polygon(screen, WALL_COLOR, cross_points, width=2)
-    draw_branch_gates(screen)
-    # Eguchi contact points remain internal inference data; do not leave
-    # persistent magenta robot/contact traces on the environment view.
+        screen.fill(BACKGROUND_COLOR)
+        pygame.draw.polygon(screen, FLOOR_COLOR, cross_points)
+        draw_branch_colour_fields(screen)
+        pygame.draw.polygon(screen, WALL_COLOR, cross_points, width=2)
+        draw_branch_gates(screen)
+        # Eguchi contact points remain internal inference data; do not leave
+        # persistent magenta robot/contact traces on the environment view.
 
-    if show_regions:
-        draw_proxy_partition(screen)
-        draw_proxy_robot_assignments(screen, robots)
-        pygame.draw.rect(screen, JUNCTION_COLOR, junction_rect, width=2)
-        pygame.draw.circle(screen, BASE_COLOR, BASE_POSITION, 7, width=2)
-        pygame.draw.rect(
-            screen,
-            BRANCH_COLORS[active_branch],
-            early_capture_regions[active_branch],
-            width=2,
-        )
-        pygame.draw.rect(
-            screen,
-            BRANCH_COLORS[active_branch],
-            get_saturation_rect(active_branch),
-            width=2,
-        )
-        for branch, rect in dead_end_regions.items():
+        if show_regions:
+            draw_proxy_partition(screen)
+            draw_proxy_robot_assignments(screen, robots)
+            pygame.draw.rect(screen, JUNCTION_COLOR, junction_rect, width=2)
+            pygame.draw.circle(screen, BASE_COLOR, BASE_POSITION, 7, width=2)
             pygame.draw.rect(
                 screen,
-                BRANCH_COLORS[branch],
-                rect,
-                width=3 if branch == active_branch else 2,
+                BRANCH_COLORS[active_branch],
+                early_capture_regions[active_branch],
+                width=2,
             )
-        for robot in (
-            get_shepherds(robots)
-            + get_pre_shepherds(robots)
-        ):
-            if robot.shepherd_anchor is not None:
-                pygame.draw.circle(
+            pygame.draw.rect(
+                screen,
+                BRANCH_COLORS[active_branch],
+                get_saturation_rect(active_branch),
+                width=2,
+            )
+            for branch, rect in dead_end_regions.items():
+                pygame.draw.rect(
                     screen,
-                    BRANCH_COLORS[
-                        robot.shepherd_branch
-                        or active_branch
-                    ],
-                    robot.shepherd_anchor,
-                    4,
-                    width=2,
+                    BRANCH_COLORS[branch],
+                    rect,
+                    width=3 if branch == active_branch else 2,
                 )
-        draw_relay_plan(screen, robots)
+            for robot in (
+                get_shepherds(robots)
+                + get_pre_shepherds(robots)
+            ):
+                if robot.shepherd_anchor is not None:
+                    pygame.draw.circle(
+                        screen,
+                        BRANCH_COLORS[
+                            robot.shepherd_branch
+                            or active_branch
+                        ],
+                        robot.shepherd_anchor,
+                        4,
+                        width=2,
+                    )
+            draw_relay_plan(screen, robots)
 
-    pygame.draw.circle(screen, JUNCTION_COLOR, (center_x, center_y), 5)
-    pygame.draw.circle(screen, BASE_COLOR, BASE_POSITION, 6)
-    if show_comm_links:
-        draw_communication_links(screen, robots)
-    for robot in robots:
-        robot.draw(screen, color_reference_density, show_density_color)
+        pygame.draw.circle(screen, JUNCTION_COLOR, (center_x, center_y), 5)
+        pygame.draw.circle(screen, BASE_COLOR, BASE_POSITION, 6)
+        if show_comm_links:
+            draw_communication_links(screen, robots)
+        for robot in robots:
+            robot.draw(screen, color_reference_density, show_density_color)
 
-    normal_count, shepherd_count, relay_count = count_branch_roles(robots, active_branch)
-    communication_stats = get_communication_stats(robots)
-    front_comm = get_front_communication_status(robots, active_branch)
-    backtrack_bridge_stats = get_backtrack_bridge_stats(robots)
-    communication_parent_distances = [
-        robot.position.distance_to(robot.comm_parent.position)
-        for robot in robots
-        if robot.connected_to_base and robot.comm_parent is not None
-    ]
-    communication_guarded_count = sum(
-        distance > COMM_GUARD_START
-        for distance in communication_parent_distances
-    )
-    communication_max_parent_distance = max(
-        communication_parent_distances,
-        default=0.0,
-    )
-    fluid_body_region_counts = {
-        region: sum(
+        normal_count, shepherd_count, relay_count = count_branch_roles(robots, active_branch)
+        communication_stats = get_communication_stats(robots)
+        front_comm = get_front_communication_status(robots, active_branch)
+        backtrack_bridge_stats = get_backtrack_bridge_stats(robots)
+        communication_parent_distances = [
+            robot.position.distance_to(robot.comm_parent.position)
+            for robot in robots
+            if robot.connected_to_base and robot.comm_parent is not None
+        ]
+        communication_guarded_count = sum(
+            distance > COMM_GUARD_START
+            for distance in communication_parent_distances
+        )
+        communication_max_parent_distance = max(
+            communication_parent_distances,
+            default=0.0,
+        )
+        fluid_body_region_counts = {
+            region: sum(
+                robot.role == "NORMAL"
+                and get_robot_region(robot.position) == region
+                for robot in robots
+            )
+            for region in ("BOTTOM", "JUNCTION", active_branch)
+        }
+        shepherd_line_error = max(
+            (
+                robot.position.distance_to(
+                    shepherd_slot_position_at_depth(
+                        robot.shepherd_anchor,
+                        active_branch,
+                        get_shepherd_line_depth(active_branch),
+                    )
+                )
+                for robot in get_shepherds(robots)
+                if robot.shepherd_anchor is not None
+            ),
+            default=0.0,
+        )
+        force_samples = [
+            robot
+            for robot in robots
+            if robot.role == "NORMAL"
+            and get_robot_region(robot.position) == active_branch
+        ]
+        force_sample_count = max(1, len(force_samples))
+        average_sph_pressure_force = sum(
+            robot.last_sph_pressure_force
+            for robot in force_samples
+        ) / force_sample_count
+        average_goal_force = sum(
+            robot.last_goal_force
+            for robot in force_samples
+        ) / force_sample_count
+        active_capture_rect = early_capture_regions[active_branch]
+        shepherd_candidate_count = sum(
             robot.role == "NORMAL"
-            and get_robot_region(robot.position) == region
+            and get_robot_region(robot.position) == active_branch
+            and active_capture_rect.collidepoint(
+                robot.position.x,
+                robot.position.y,
+            )
             for robot in robots
         )
-        for region in ("BOTTOM", "JUNCTION", active_branch)
-    }
-    shepherd_line_error = max(
-        (
-            robot.position.distance_to(
-                shepherd_slot_position_at_depth(
-                    robot.shepherd_anchor,
-                    active_branch,
-                    get_shepherd_line_depth(active_branch),
-                )
-            )
-            for robot in get_shepherds(robots)
-            if robot.shepherd_anchor is not None
-        ),
-        default=0.0,
-    )
-    force_samples = [
-        robot
-        for robot in robots
-        if robot.role == "NORMAL"
-        and get_robot_region(robot.position) == active_branch
-    ]
-    force_sample_count = max(1, len(force_samples))
-    average_sph_pressure_force = sum(
-        robot.last_sph_pressure_force
-        for robot in force_samples
-    ) / force_sample_count
-    average_goal_force = sum(
-        robot.last_goal_force
-        for robot in force_samples
-    ) / force_sample_count
-    active_capture_rect = early_capture_regions[active_branch]
-    shepherd_candidate_count = sum(
-        robot.role == "NORMAL"
-        and get_robot_region(robot.position) == active_branch
-        and active_capture_rect.collidepoint(
-            robot.position.x,
-            robot.position.y,
+        return_branch_robot_count = sum(
+            robot.role != "PEBBLE"
+            and get_robot_region(robot.position) in BRANCHES
+            for robot in robots
         )
-        for robot in robots
-    )
-    return_branch_robot_count = sum(
-        robot.role != "PEBBLE"
-        and get_robot_region(robot.position) in BRANCHES
-        for robot in robots
-    )
-    return_bottom_count = sum(
-        get_robot_region(robot.position) == "BOTTOM"
-        for robot in robots
-    )
-    return_junction_count = sum(
-        robot.role != "PEBBLE"
-        and get_robot_region(robot.position) == "JUNCTION"
-        for robot in robots
-    )
-    return_special_count = sum(
-        robot.role in {
-            "RELAY",
-            "TRUNK_RELAY",
-            "SHEPHERD",
-            "PRE_SHEPHERD",
-        }
-        for robot in robots
-    )
-    collective_front_count = sum(
-        transfer_front_follow_weight(robot) > 0.05
-        for robot in robots
-    )
-    hud_lines = [
-        "SPH Physical DFS | Emmons distribution | Eguchi contact inference",
-        f"FPS={clock.get_fps():.1f} | robots={len(robots)} | phase={phase.name}",
-        f"Sketch sequence stage={get_sequence_stage()}/6",
-        (
-            "Initial state=BASE_COMPRESSION"
-            if phase == SimulationPhase.MOVE_TO_JUNCTION
-            and simulation_time < BASE_COMPRESSION_DURATION
-            else "Initial state=SAFETY_CONDITIONING"
-            if initial_safety_conditioning_active()
-            else "Initial state=FLOW_ESTABLISHED"
-            if initial_release_event_time is not None
-            else "Initial state=NORMAL"
-        ),
-        f"Initial safety={INITIAL_SAFETY_POLICY_VERSION}",
-        f"Base compression={get_base_compression_envelope():.2f}",
-        (
-            "Release event="
-            + (
-                "RIGHT_FLOW"
-                if initial_release_event_time is not None
-                else "WAIT"
-            )
-            + f" | right={initial_release_flow_count} "
-            + f"moving={initial_release_flow_ratio:.2f} "
-            + f"speed={initial_release_average_speed:.1f} "
-            + f"dwell={initial_release_flow_dwell:.2f}"
-        ),
-        (
-            "Decision=NORMAL peer consensus | "
-            f"Junction voters={sum(robot.role == 'NORMAL' and get_robot_region(robot.position) == 'JUNCTION' for robot in robots)}"
-        ),
-        (
-            f"Pebble policy={PEBBLE_POLICY_VERSION} | "
-            f"count={len(get_pebbles(robots))} | "
-            f"visited-uids={sorted(observed_visited_branch_uids(robots))}/"
-            f"{len(discovered_branch_uids()) or len(BRANCHES)} | "
-            f"consensus={branch_identity_label(distributed_consensus_branch)}"
-        ),
-        (
-            "Visited branch leakage: "
-            + " | ".join(
-                f"{branch}={current_visited_branch_leakage[branch]}"
-                for branch in BRANCHES
-            )
-        ),
-        (
-            "Pebble guidance active normals="
-            f"{current_pebble_guidance_active_normals} | "
-            f"activations={metrics.pebble_guidance_activation_count} | "
-            f"recoveries={metrics.pebble_recovery_success_count}"
-        ),
-        (
-            f"Fluid body={FLUID_BODY_POLICY_VERSION} | "
-            f"B={fluid_body_region_counts['BOTTOM']} "
-            f"J={fluid_body_region_counts['JUNCTION']} "
-            f"{active_branch}={fluid_body_region_counts[active_branch]}"
-        ),
-        (
-            f"Breadcrumb policy={BREADCRUMB_GUARD_POLICY_VERSION} | "
-            "static NORMAL guards=0"
-        ),
-        (
-            f"Branch={branch_identity_label(active_branch_uid)}"
-            if phase not in {
-                SimulationPhase.MOVE_TO_JUNCTION,
-                SimulationPhase.RETURN_TO_BASE,
-                SimulationPhase.DONE,
+        return_bottom_count = sum(
+            get_robot_region(robot.position) == "BOTTOM"
+            for robot in robots
+        )
+        return_junction_count = sum(
+            robot.role != "PEBBLE"
+            and get_robot_region(robot.position) == "JUNCTION"
+            for robot in robots
+        )
+        return_special_count = sum(
+            robot.role in {
+                "RELAY",
+                "TRUNK_RELAY",
+                "SHEPHERD",
+                "PRE_SHEPHERD",
             }
-            else "Branch=-"
-        ),
-        (
-            "Distributed decision=MOVE_"
-            f"{branch_identity_label(distributed_consensus_branch)}"
-            if distributed_consensus_branch
-            else "Distributed decision=VOTING"
-        ),
-        (
-            f"Pressure transfer={active_branch}->BASE | "
-            f"eligible={sum(robot.transfer_target == 'BOTTOM' for robot in robots)}"
-            if final_base_transfer_active
-            else f"Pressure transfer={active_branch}->{transfer_branch} | "
-            f"eligible={sum(robot.transfer_target == transfer_branch for robot in robots)}"
-            if transfer_branch
-            else "Pressure transfer=-"
-        ),
-        (
-            f"Flow continuity: max-gap={transfer_path_max_gap:.1f} | "
-            f"entrance={transfer_entrance_count}/"
-            f"{TRANSFER_CONTINUITY_MIN_ENTRANCE_ROBOTS} | "
-            f"control={transfer_gap_control:.2f} | "
-            f"target-scale={transfer_target_motion_scale:.2f}"
-        ),
-        (
-            f"Cohort flow={COHORT_FLOW_POLICY_VERSION} | "
-            f"tail-feed-scale="
-            f"{1.0 + FILL_TAIL_FEED_BOOST * smoothstep01(transfer_gap_control):.2f}"
-        ),
-        (
-            f"Branch fill={BRANCH_FILL_QUOTA_POLICY_VERSION} | "
-            f"{active_branch}={branch_fill_current_count}/"
-            f"{branch_fill_target_count} | "
-            f"feed={branch_fill_feed_state} "
-            f"scale={branch_fill_feed_scale:.2f} | "
-            f"deficit-control={branch_fill_deficit_control:.2f} "
-            f"spacing={branch_fill_planning_spacing(active_branch):.1f}"
-        ),
-        (
-            f"Transfer follow={TRANSFER_FOLLOW_POLICY_VERSION} | "
-            f"front={collective_front_count} | "
-            f"active={transfer_follow_activation():.2f}"
-        ),
-        (
-            f"Shepherd trigger={SATURATION_POLICY_VERSION} | "
-            f"tip={saturation_tracker.tip_count} "
-            f"density={saturation_tracker.average_density_ratio:.2f} "
-            f"width={saturation_tracker.lateral_coverage_ratio:.2f}/"
-            f"{SATURATION_PACKED_LATERAL_COVERAGE_RATIO:.2f} "
-            f"mode={saturation_tracker.recognition_mode} "
-            f"ready={saturation_tracker.saturated}"
-        ),
-        "Gate commands (no geofence): " + " | ".join(
-            f"{branch}={branch_gate_states[branch]}"
-            for branch in BRANCHES
-        ),
-        (
-            "Physical mouth guards: "
-            + " | ".join(
-                f"{branch}="
-                f"{sum(robot.role == 'JUNCTION_GUARD' and robot.junction_guard_branch == branch for robot in robots)}"
-                for branch in BRANCHES
-            )
-        ),
-        (
-            f"Guard phase status={junction_guard_status} "
-            f"timer={junction_guard_formation_timer:.2f} "
-            f"formed={junction_guards_formed(robots)}"
-        ),
-        junction_guard_wait_hud_summary(robots),
-        distributed_vote_hud_summary(),
-        (
-            "Local Guard: "
-            + (
-                " || ".join(
-                    local_guard_debug_summary(
-                        branch_descriptors_by_uid[uid],
-                        robots,
-                    )
-                    for uid in ordered_discovered_branch_uids()
-                )
-                if branch_descriptors_by_uid
-                else "-"
-            )
-        ),
-        (
-            f"Thick K-hop walls={THICK_MOUTH_GUARD_POLICY_VERSION} | "
-            f"pending={pending_branch_start or '-'} | "
-            + " | ".join(
-                f"{branch}={thick_mouth_guard_layers.get(branch, 0)}L/"
-                f"{thick_mouth_guard_columns.get(branch, 0)}C"
-                for branch in BRANCHES
-            )
-        ),
-        (
-            f"Persistent frontier={FRONTIER_LINE_POLICY_VERSION} | "
-            f"branch={frontier_line_branch or '-'} "
-            f"depth={frontier_line_depth:.1f} "
-            f"settled={frontier_line_target_settled_ratio:.2f} "
-            f"span={frontier_line_current_span:.1f}/"
-            f"{frontier_line_target_span:.1f} "
-            f"coverage={frontier_line_physical_coverage_ratio:.2f} "
-            f"edge={frontier_line_left_edge_gap:.1f}/"
-            f"{frontier_line_right_edge_gap:.1f} "
-            f"continuous={frontier_line_continuous} "
-            f"center={frontier_line_lateral_center:.1f} "
-            f"ready={frontier_line_row_ready} "
-            f"ids={[robot.robot_id for robot in get_frontier_shepherds(robots)]}"
-        ),
-        (
-            "Local physical widths: "
-            + (
-                " | ".join(
-                    f"{branch_identity_label(uid)} "
-                    f"flow={branch_descriptors_by_uid[uid].observed_flow_width:.1f} "
-                    f"physical={branch_descriptors_by_uid[uid].observed_physical_width:.1f} "
-                    f"conf={branch_descriptors_by_uid[uid].physical_width_confident}"
-                    for uid in ordered_discovered_branch_uids()
-                )
-                if branch_descriptors_by_uid
-                else "-"
-            )
-        ),
-        (
-            "Observed guard frontiers: "
-            + " | ".join(
-                f"{branch}={junction_guard_frontier_depths.get(branch, 0.0):.1f}"
-                for branch in BRANCHES
-            )
-        ),
-        (
-            "Detected Branch UIDs: "
-            + (
-                " | ".join(
-                    f"{branch_identity_label(uid)}="
-                    f"{branch_descriptors_by_uid[uid].visit_state}"
-                    for uid in ordered_discovered_branch_uids()
-                )
-                if branch_descriptors_by_uid
-                else "-"
-            )
-        ),
-        (
-            "Pebble UIDs: "
-            + (
-                " | ".join(
-                    branch_identity_label(pebble.pebble_branch_uid)
-                    for pebble in get_pebbles(robots)
-                )
-                if get_pebbles(robots)
-                else "-"
-            )
-        ),
-        (
-            "Order="
-            + (
-                " > ".join(branch_identity_label(uid) for uid in branch_order_plan)
-                if branch_order_plan
-                else "-"
-            )
-        ),
-        (
-            "Last branch cost: "
-            + (
-                f"Q={metrics.branch_selection_events[-1]['components'].get('predicted_flow', 0.0):.2f} "
-                f"dRho={metrics.branch_selection_events[-1]['components'].get('density_disturbance', 0.0):.2f} "
-                f"dV={metrics.branch_selection_events[-1]['components'].get('velocity_disturbance', 0.0):.2f} "
-                f"Comm={metrics.branch_selection_events[-1]['components'].get('rollout_comm', 0.0):.2f}"
-                if metrics.branch_selection_events
-                else "-"
-            )
-        ),
-        (
-            "Proxy mass: "
-            + " | ".join(
-                f"{branch_identity_label(branch_uid_for_fixture(branch))} "
-                f"q={last_proxy_mass_stats.get(branch, {}).get('quota_fraction', 0.0):.2f} "
-                f"m={last_proxy_mass_stats.get(branch, {}).get('actual_mass_fraction', 0.0):.2f}"
-                for branch in last_proxy_candidates
-            )
-            if last_proxy_candidates
-            else "Proxy mass: -"
-        ),
-        (
-            "Proxy rollout candidates: "
-            + " | ".join(
-                f"{branch}:J={data['cost']:.2f},Q={data['components']['predicted_flow']:.2f},"
-                f"n={data['components']['proxy_primary_count']}+{data['components']['proxy_context_count']}"
-                for branch, data in sorted(last_flow_rollout_scores.items())
-            )
-            if last_flow_rollout_scores
-            else "Proxy rollout candidates: -"
-        ),
-        f"SPH lambda={STIFFNESS_EXPONENT:.3f} (fixed)",
-        (
-            f"Junction consensus: n={junction_consensus_tracker.candidate_count} "
-            f"stable={junction_consensus_tracker.stable_ratio:.2f} "
-            f"dv={junction_consensus_tracker.mean_density_delta_ratio:.3f} "
-            f"dwell={junction_consensus_tracker.dwell:.2f} "
-            f"fast={junction_consensus_tracker.fast_dwell:.2f} "
-            f"mode={junction_consensus_tracker.ready_mode}"
-        ),
-        (
-            f"Junction inference={JUNCTION_INFERENCE_POLICY_VERSION} | "
-            f"confirmed={junction_inference_tracker.confirmed} "
-            f"n={junction_inference_tracker.observation_count} "
-            f"lateral={junction_inference_tracker.expansion_ratio:.2f} "
-            f"dwell={junction_inference_tracker.expansion_dwell:.2f} "
-            f"discovery={junction_inference_tracker.discovery_dwell:.2f}/"
-            f"{JUNCTION_DISCOVERY_SETTLE_TIME:.2f} "
-            f"valid={sorted(junction_inference_tracker.valid_branches)} "
-            f"uids={[branch_identity_label(uid) for uid in ordered_discovered_branch_uids()]} "
-            f"dir-stable="
-            f"{sum(descriptor.direction_is_stable for descriptor in branch_descriptors_by_uid.values())}/"
-            f"{len(branch_descriptors_by_uid)} "
-            f"dir-mature="
-            f"{sum(descriptor.direction_is_mature for descriptor in branch_descriptors_by_uid.values())}/"
-            f"{len(branch_descriptors_by_uid)} "
-            f"front={junction_inference_tracker.forward_probe_status}"
-        ),
-        (
-            "Cohorts: "
-            + " | ".join(
-                f"{branch}=n{junction_inference_tracker.cohort_counts.get(branch, 0)}"
-                f"/d{junction_inference_tracker.cohort_travel.get(branch, 0.0):.1f}"
-                for branch in BRANCHES
-            )
-        ),
-        (
-            f"Indirect contact={INDIRECT_CONTACT_POLICY_VERSION} | "
-            f"points={len(collision_points)} | events={len(metrics.contact_events)}"
-        ),
-        (
-            f"Dead-end inference={DEAD_END_INFERENCE_POLICY_VERSION} | "
-            f"frontier={dead_end_inference_tracker.frontier_count} "
-            f"leader={dead_end_inference_tracker.leader_contact:.2f} "
-            f"contact={dead_end_inference_tracker.mean_contact:.2f} "
-            f"v={dead_end_inference_tracker.mean_forward_speed:.1f} "
-            f"rho={dead_end_inference_tracker.mean_density_ratio:.2f} "
-            f"escape={dead_end_inference_tracker.lateral_escape_ratio:.2f} "
-            f"bumper={dead_end_inference_tracker.shepherd_direct_contact_ratio:.2f} "
-            f"span={dead_end_inference_tracker.shepherd_contact_span_ratio:.2f} "
-            f"shepherd-v={dead_end_inference_tracker.shepherd_mean_forward_speed:.1f} "
-            f"branch-n={dead_end_inference_tracker.branch_robot_count}"
-        ),
-        (
-            "Dead-end progress: "
-            f"frontier-contact={dead_end_inference_tracker.shepherd_direct_contact_ratio:.2f} "
-            f"forward={dead_end_inference_tracker.frontier_forward_progress:.1f} "
-            f"rate={dead_end_inference_tracker.frontier_progress_rate:.2f} "
-            f"dwell={dead_end_inference_tracker.dwell:.2f} "
-            f"blocking={dead_end_inference_tracker.blocking_reason} "
-            f"mode={dead_end_inference_tracker.confirmation_mode} "
-            f"confirmed={dead_end_inference_tracker.confirmed} "
-            f"depth={dead_end_inference_tracker.confirmed_depth:.1f}"
-        ),
-        (
-            "Effective width: "
-            + " | ".join(
-                f"{branch}={effective_branch_widths.get(branch, 0.0):.1f}"
-                for branch in BRANCHES
-            )
-        ),
-        f"States: U={branch_states['UP']} L={branch_states['LEFT']} R={branch_states['RIGHT']}",
-        f"Base comm={communication_stats['connected']}/{len(robots)} | hop={communication_stats['max_hop']} | margin={communication_stats['margin']:.1f}",
-        (
-            f"Comm control={COMM_CONTROL_POLICY_VERSION} | "
-            f"guarded={communication_guarded_count} | "
-            f"max parent gap={communication_max_parent_distance:.1f}/"
-            f"{COMM_GUARD_HARD_LIMIT:.1f}"
-        ),
-        (
-            f"Backtrack bridge={BACKTRACK_BRIDGE_POLICY_VERSION} | "
-            f"risk={backtrack_bridge_stats['risk']} "
-            f"required={backtrack_bridge_stats['required']} "
-            f"guards={backtrack_bridge_stats['guards']} "
-            f"settled={backtrack_bridge_stats['settled']} "
-            f"ready={backtrack_bridge_stats['ready']}"
-        ),
-        (
-            f"Natural bridge k="
-            f"{backtrack_bridge_stats['natural_redundancy']} "
-            f"margin={backtrack_bridge_stats['natural_margin']:.1f} | "
-            f"links B={backtrack_bridge_stats['base_links']} "
-            f"{active_branch}={backtrack_bridge_stats['branch_links']}"
-        ),
-        f"Base direct={communication_stats['direct']} | Breadcrumbs={len(get_active_branch_relays(robots))}",
-        f"Front comm ratio={front_comm['connected_ratio']:.2f} | relay need={front_comm['needs_relay']}",
-        f"Reactive relays={len(get_relays(robots))} | preplanned slots=0",
-        f"Branch robots normal={normal_count} relay={relay_count} shepherd={shepherd_count}",
-        f"Saturation: tip={saturation_tracker.tip_count} slow={saturation_tracker.low_speed_ratio:.2f}",
-        (
-            f"density={saturation_tracker.average_density_ratio:.2f} "
-            f"occupancy={saturation_tracker.occupancy_ratio:.2f} "
-            f"width={saturation_tracker.lateral_coverage_ratio:.2f}"
-        ),
-        (
-            f"Saturation policy={SATURATION_POLICY_VERSION} | "
-            f"start={PRESSURE_START_POLICY_VERSION} | "
-            f"geometric count={saturation_tracker.tip_count}/"
-            f"{saturation_tracker.packed_min_count}"
-        ),
-        (
-            f"front_delta={saturation_tracker.front_delta:.2f} "
-            f"dwell={saturation_tracker.dwell:.2f} "
-            f"mode={saturation_tracker.recognition_mode} "
-            f"saturated={saturation_tracker.saturated}"
-        ),
-        (
-            "Branch fill continuity: "
-            f"min-slice={branch_continuity_tracker.minimum_slice_count}/"
-            f"{BRANCH_CONTINUITY_MIN_ROBOTS_PER_SLICE} | "
-            f"coverage={branch_continuity_tracker.covered_slice_ratio:.2f}/"
-            f"{BRANCH_CONTINUITY_REQUIRED_SLICE_RATIO:.2f} | "
-            f"gap={branch_continuity_tracker.maximum_depth_gap:.1f}/"
-            f"{BRANCH_CONTINUITY_MAX_DEPTH_GAP:.1f} | "
-            f"dwell={branch_continuity_tracker.dwell:.2f} "
-            f"ready={branch_continuity_tracker.ready}"
-        ),
-        (
-            f"SPH reference spacing={REFERENCE_EQUILIBRIUM_SPACING:.1f} | "
-            f"fill planning={branch_fill_planning_spacing(active_branch):.1f}"
-        ),
-        f"Shepherd target={adaptive_shepherd_count()} | formed={shepherd_boundary_formed(robots)} | pressure t={pressure_push_timer:.2f}",
-        (
-            f"Election={SHEPHERD_ELECTION_POLICY_VERSION} | "
-            f"candidates={shepherd_candidate_count}/"
-            f"{adaptive_shepherd_count()}"
-        ),
-        (
-            f"Shepherd control=LOCAL_ONLY | "
-            f"active={len(get_shepherds(robots))} | "
-            f"pre={len(get_pre_shepherds(robots))} "
-            f"branch={pre_shepherd_branch or '-'} | "
-            f"pre-pack={pre_shepherd_pack_ready} "
-            f"dwell={pre_shepherd_pack_dwell:.2f} | "
-            f"drain={draining_branch or '-'}"
-        ),
-        (
-            f"Motion={MOTION_POLICY_VERSION} | "
-            f"Shepherd={SHEPHERD_POLICY_VERSION}"
-        ),
-        f"Shepherd pipeline={SHEPHERD_PIPELINE_POLICY_VERSION}",
-        (
-            f"Goal={GOAL_POLICY_VERSION} | "
-            f"Goal avg={average_goal_force:.1f} | "
-            f"bias={WEAK_BRANCH_BIAS_FORCE:.1f}"
-        ),
-        (
-            f"Force avg: SPH={average_sph_pressure_force:.1f} | "
-            f"Goal={average_goal_force:.1f}"
-        ),
-        f"Pressure policy={PRESSURE_POLICY_VERSION}",
-        (
-            f"Final gate={FINAL_GATE_POLICY_VERSION} | "
-            f"branch robots={return_branch_robot_count}"
-        ),
-        (
-            f"Return status: B={return_bottom_count}/"
-            f"{return_mobile_target_count(robots)} "
-            f"J={return_junction_count} "
-            f"special={return_special_count} "
-            f"pending-trunk={return_trunk_release_pending} "
-            f"done-dwell={return_done_dwell:.2f}/"
-            f"{RETURN_DONE_DWELL_TIME:.2f}"
-        ),
-        (
-            f"Shepherd line depth={get_shepherd_line_depth(active_branch):.1f} "
-            f"| max slot error={shepherd_line_error:.2f}"
-        ),
-        f"Distance total={sum(robot.total_distance for robot in robots):.0f} | disconnect robot-s={metrics.disconnected_robot_seconds:.1f}",
-    ]
-    draw_hud_panel(screen, hud_lines)
-    pygame.display.flip()
-    if capture_directory is not None:
-        capture_signature = (
-            phase.name,
-            active_branch,
-            junction_guard_status
-            if phase == SimulationPhase.FORM_JUNCTION_GUARDS
-            else "-",
-            int(frontier_line_depth // max(40.0 * MAP_SCALE, 1.0))
-            if phase == SimulationPhase.EXPLORE_BRANCH
-            else -1,
-            dead_end_inference_tracker.confirmed,
+            for robot in robots
         )
-        if capture_signature != capture_last_signature:
-            capture_last_signature = capture_signature
-            capture_name = (
-                f"{headless_frame_count:05d}_{phase.name}_"
-                f"{active_branch}_{max(0, round(frontier_line_depth)):04d}.png"
+        collective_front_count = sum(
+            transfer_front_follow_weight(robot) > 0.05
+            for robot in robots
+        )
+        hud_lines = [
+            "SPH Physical DFS | Emmons distribution | Eguchi contact inference",
+            f"FPS={clock.get_fps():.1f} | robots={len(robots)} | phase={phase.name}",
+            f"Sketch sequence stage={get_sequence_stage()}/6",
+            (
+                "Initial state=BASE_COMPRESSION"
+                if phase == SimulationPhase.MOVE_TO_JUNCTION
+                and simulation_time < BASE_COMPRESSION_DURATION
+                else "Initial state=SAFETY_CONDITIONING"
+                if initial_safety_conditioning_active()
+                else "Initial state=FLOW_ESTABLISHED"
+                if initial_release_event_time is not None
+                else "Initial state=NORMAL"
+            ),
+            f"Initial safety={INITIAL_SAFETY_POLICY_VERSION}",
+            f"Base compression={get_base_compression_envelope():.2f}",
+            (
+                "Release event="
+                + (
+                    "RIGHT_FLOW"
+                    if initial_release_event_time is not None
+                    else "WAIT"
+                )
+                + f" | right={initial_release_flow_count} "
+                + f"moving={initial_release_flow_ratio:.2f} "
+                + f"speed={initial_release_average_speed:.1f} "
+                + f"dwell={initial_release_flow_dwell:.2f}"
+            ),
+            (
+                "Decision=NORMAL peer consensus | "
+                f"Junction voters={sum(robot.role == 'NORMAL' and get_robot_region(robot.position) == 'JUNCTION' for robot in robots)}"
+            ),
+            (
+                f"Pebble policy={PEBBLE_POLICY_VERSION} | "
+                f"count={len(get_pebbles(robots))} | "
+                f"visited-uids={sorted(observed_visited_branch_uids(robots))}/"
+                f"{len(discovered_branch_uids()) or len(BRANCHES)} | "
+                f"consensus={branch_identity_label(distributed_consensus_branch)}"
+            ),
+            (
+                "Visited branch leakage: "
+                + " | ".join(
+                    f"{branch}={current_visited_branch_leakage[branch]}"
+                    for branch in BRANCHES
+                )
+            ),
+            (
+                "Pebble guidance active normals="
+                f"{current_pebble_guidance_active_normals} | "
+                f"activations={metrics.pebble_guidance_activation_count} | "
+                f"recoveries={metrics.pebble_recovery_success_count}"
+            ),
+            (
+                f"Fluid body={FLUID_BODY_POLICY_VERSION} | "
+                f"B={fluid_body_region_counts['BOTTOM']} "
+                f"J={fluid_body_region_counts['JUNCTION']} "
+                f"{active_branch}={fluid_body_region_counts[active_branch]}"
+            ),
+            (
+                f"Breadcrumb policy={BREADCRUMB_GUARD_POLICY_VERSION} | "
+                "static NORMAL guards=0"
+            ),
+            (
+                f"Branch={branch_identity_label(active_branch_uid)}"
+                if phase not in {
+                    SimulationPhase.MOVE_TO_JUNCTION,
+                    SimulationPhase.RETURN_TO_BASE,
+                    SimulationPhase.DONE,
+                }
+                else "Branch=-"
+            ),
+            (
+                "Distributed decision=MOVE_"
+                f"{branch_identity_label(distributed_consensus_branch)}"
+                if distributed_consensus_branch
+                else "Distributed decision=VOTING"
+            ),
+            (
+                f"Pressure transfer={active_branch}->BASE | "
+                f"eligible={sum(robot.transfer_target == 'BOTTOM' for robot in robots)}"
+                if final_base_transfer_active
+                else f"Pressure transfer={active_branch}->{transfer_branch} | "
+                f"eligible={sum(robot.transfer_target == transfer_branch for robot in robots)}"
+                if transfer_branch
+                else "Pressure transfer=-"
+            ),
+            (
+                f"Flow continuity: max-gap={transfer_path_max_gap:.1f} | "
+                f"entrance={transfer_entrance_count}/"
+                f"{TRANSFER_CONTINUITY_MIN_ENTRANCE_ROBOTS} | "
+                f"control={transfer_gap_control:.2f} | "
+                f"target-scale={transfer_target_motion_scale:.2f}"
+            ),
+            (
+                f"Cohort flow={COHORT_FLOW_POLICY_VERSION} | "
+                f"tail-feed-scale="
+                f"{1.0 + FILL_TAIL_FEED_BOOST * smoothstep01(transfer_gap_control):.2f}"
+            ),
+            (
+                f"Branch fill={BRANCH_FILL_QUOTA_POLICY_VERSION} | "
+                f"{active_branch}={branch_fill_current_count}/"
+                f"{branch_fill_target_count} | "
+                f"feed={branch_fill_feed_state} "
+                f"scale={branch_fill_feed_scale:.2f} | "
+                f"deficit-control={branch_fill_deficit_control:.2f} "
+                f"spacing={branch_fill_planning_spacing(active_branch):.1f}"
+            ),
+            (
+                f"Transfer follow={TRANSFER_FOLLOW_POLICY_VERSION} | "
+                f"front={collective_front_count} | "
+                f"active={transfer_follow_activation():.2f}"
+            ),
+            (
+                f"Shepherd trigger={SATURATION_POLICY_VERSION} | "
+                f"tip={saturation_tracker.tip_count} "
+                f"density={saturation_tracker.average_density_ratio:.2f} "
+                f"width={saturation_tracker.lateral_coverage_ratio:.2f}/"
+                f"{SATURATION_PACKED_LATERAL_COVERAGE_RATIO:.2f} "
+                f"mode={saturation_tracker.recognition_mode} "
+                f"ready={saturation_tracker.saturated}"
+            ),
+            "Gate commands (no geofence): " + " | ".join(
+                f"{branch}={branch_gate_states[branch]}"
+                for branch in BRANCHES
+            ),
+            (
+                "Physical mouth guards: "
+                + " | ".join(
+                    f"{branch}="
+                    f"{sum(robot.role == 'JUNCTION_GUARD' and robot.junction_guard_branch == branch for robot in robots)}"
+                    for branch in BRANCHES
+                )
+            ),
+            (
+                f"Guard phase status={junction_guard_status} "
+                f"timer={junction_guard_formation_timer:.2f} "
+                f"formed={junction_guards_formed(robots)}"
+            ),
+            junction_guard_wait_hud_summary(robots),
+            distributed_vote_hud_summary(),
+            (
+                "Local Guard: "
+                + (
+                    " || ".join(
+                        local_guard_debug_summary(
+                            branch_descriptors_by_uid[uid],
+                            robots,
+                        )
+                        for uid in ordered_discovered_branch_uids()
+                    )
+                    if branch_descriptors_by_uid
+                    else "-"
+                )
+            ),
+            (
+                f"Thick K-hop walls={THICK_MOUTH_GUARD_POLICY_VERSION} | "
+                f"pending={pending_branch_start or '-'} | "
+                + " | ".join(
+                    f"{branch}={thick_mouth_guard_layers.get(branch, 0)}L/"
+                    f"{thick_mouth_guard_columns.get(branch, 0)}C"
+                    for branch in BRANCHES
+                )
+            ),
+            (
+                f"Persistent frontier={FRONTIER_LINE_POLICY_VERSION} | "
+                f"branch={frontier_line_branch or '-'} "
+                f"depth={frontier_line_depth:.1f} "
+                f"settled={frontier_line_target_settled_ratio:.2f} "
+                f"span={frontier_line_current_span:.1f}/"
+                f"{frontier_line_target_span:.1f} "
+                f"coverage={frontier_line_physical_coverage_ratio:.2f} "
+                f"edge={frontier_line_left_edge_gap:.1f}/"
+                f"{frontier_line_right_edge_gap:.1f} "
+                f"continuous={frontier_line_continuous} "
+                f"center={frontier_line_lateral_center:.1f} "
+                f"ready={frontier_line_row_ready} "
+                f"ids={[robot.robot_id for robot in get_frontier_shepherds(robots)]}"
+            ),
+            (
+                "Local physical widths: "
+                + (
+                    " | ".join(
+                        f"{branch_identity_label(uid)} "
+                        f"flow={branch_descriptors_by_uid[uid].observed_flow_width:.1f} "
+                        f"physical={branch_descriptors_by_uid[uid].observed_physical_width:.1f} "
+                        f"conf={branch_descriptors_by_uid[uid].physical_width_confident}"
+                        for uid in ordered_discovered_branch_uids()
+                    )
+                    if branch_descriptors_by_uid
+                    else "-"
+                )
+            ),
+            (
+                "Observed guard frontiers: "
+                + " | ".join(
+                    f"{branch}={junction_guard_frontier_depths.get(branch, 0.0):.1f}"
+                    for branch in BRANCHES
+                )
+            ),
+            (
+                "Detected Branch UIDs: "
+                + (
+                    " | ".join(
+                        f"{branch_identity_label(uid)}="
+                        f"{branch_descriptors_by_uid[uid].visit_state}"
+                        for uid in ordered_discovered_branch_uids()
+                    )
+                    if branch_descriptors_by_uid
+                    else "-"
+                )
+            ),
+            (
+                "Pebble UIDs: "
+                + (
+                    " | ".join(
+                        branch_identity_label(pebble.pebble_branch_uid)
+                        for pebble in get_pebbles(robots)
+                    )
+                    if get_pebbles(robots)
+                    else "-"
+                )
+            ),
+            (
+                "Order="
+                + (
+                    " > ".join(branch_identity_label(uid) for uid in branch_order_plan)
+                    if branch_order_plan
+                    else "-"
+                )
+            ),
+            (
+                "Last branch cost: "
+                + (
+                    f"Q={metrics.branch_selection_events[-1]['components'].get('predicted_flow', 0.0):.2f} "
+                    f"dRho={metrics.branch_selection_events[-1]['components'].get('density_disturbance', 0.0):.2f} "
+                    f"dV={metrics.branch_selection_events[-1]['components'].get('velocity_disturbance', 0.0):.2f} "
+                    f"Comm={metrics.branch_selection_events[-1]['components'].get('rollout_comm', 0.0):.2f}"
+                    if metrics.branch_selection_events
+                    else "-"
+                )
+            ),
+            (
+                "Proxy mass: "
+                + " | ".join(
+                    f"{branch_identity_label(branch_uid_for_fixture(branch))} "
+                    f"q={last_proxy_mass_stats.get(branch, {}).get('quota_fraction', 0.0):.2f} "
+                    f"m={last_proxy_mass_stats.get(branch, {}).get('actual_mass_fraction', 0.0):.2f}"
+                    for branch in last_proxy_candidates
+                )
+                if last_proxy_candidates
+                else "Proxy mass: -"
+            ),
+            (
+                "Proxy rollout candidates: "
+                + " | ".join(
+                    f"{branch}:J={data['cost']:.2f},Q={data['components']['predicted_flow']:.2f},"
+                    f"n={data['components']['proxy_primary_count']}+{data['components']['proxy_context_count']}"
+                    for branch, data in sorted(last_flow_rollout_scores.items())
+                )
+                if last_flow_rollout_scores
+                else "Proxy rollout candidates: -"
+            ),
+            f"SPH lambda={STIFFNESS_EXPONENT:.3f} (fixed)",
+            (
+                f"Junction consensus: n={junction_consensus_tracker.candidate_count} "
+                f"stable={junction_consensus_tracker.stable_ratio:.2f} "
+                f"dv={junction_consensus_tracker.mean_density_delta_ratio:.3f} "
+                f"dwell={junction_consensus_tracker.dwell:.2f} "
+                f"fast={junction_consensus_tracker.fast_dwell:.2f} "
+                f"mode={junction_consensus_tracker.ready_mode}"
+            ),
+            (
+                f"Junction inference={JUNCTION_INFERENCE_POLICY_VERSION} | "
+                f"confirmed={junction_inference_tracker.confirmed} "
+                f"n={junction_inference_tracker.observation_count} "
+                f"lateral={junction_inference_tracker.expansion_ratio:.2f} "
+                f"dwell={junction_inference_tracker.expansion_dwell:.2f} "
+                f"discovery={junction_inference_tracker.discovery_dwell:.2f}/"
+                f"{JUNCTION_DISCOVERY_SETTLE_TIME:.2f} "
+                f"valid={sorted(junction_inference_tracker.valid_branches)} "
+                f"uids={[branch_identity_label(uid) for uid in ordered_discovered_branch_uids()]} "
+                f"dir-stable="
+                f"{sum(descriptor.direction_is_stable for descriptor in branch_descriptors_by_uid.values())}/"
+                f"{len(branch_descriptors_by_uid)} "
+                f"dir-mature="
+                f"{sum(descriptor.direction_is_mature for descriptor in branch_descriptors_by_uid.values())}/"
+                f"{len(branch_descriptors_by_uid)} "
+                f"front={junction_inference_tracker.forward_probe_status}"
+            ),
+            (
+                "Cohorts: "
+                + " | ".join(
+                    f"{branch}=n{junction_inference_tracker.cohort_counts.get(branch, 0)}"
+                    f"/d{junction_inference_tracker.cohort_travel.get(branch, 0.0):.1f}"
+                    for branch in BRANCHES
+                )
+            ),
+            (
+                f"Indirect contact={INDIRECT_CONTACT_POLICY_VERSION} | "
+                f"points={len(collision_points)} | events={len(metrics.contact_events)}"
+            ),
+            (
+                f"Dead-end inference={DEAD_END_INFERENCE_POLICY_VERSION} | "
+                f"frontier={dead_end_inference_tracker.frontier_count} "
+                f"leader={dead_end_inference_tracker.leader_contact:.2f} "
+                f"contact={dead_end_inference_tracker.mean_contact:.2f} "
+                f"v={dead_end_inference_tracker.mean_forward_speed:.1f} "
+                f"rho={dead_end_inference_tracker.mean_density_ratio:.2f} "
+                f"escape={dead_end_inference_tracker.lateral_escape_ratio:.2f} "
+                f"bumper={dead_end_inference_tracker.shepherd_direct_contact_ratio:.2f} "
+                f"span={dead_end_inference_tracker.shepherd_contact_span_ratio:.2f} "
+                f"shepherd-v={dead_end_inference_tracker.shepherd_mean_forward_speed:.1f} "
+                f"branch-n={dead_end_inference_tracker.branch_robot_count}"
+            ),
+            (
+                "Dead-end progress: "
+                f"frontier-contact={dead_end_inference_tracker.shepherd_direct_contact_ratio:.2f} "
+                f"forward={dead_end_inference_tracker.frontier_forward_progress:.1f} "
+                f"rate={dead_end_inference_tracker.frontier_progress_rate:.2f} "
+                f"dwell={dead_end_inference_tracker.dwell:.2f} "
+                f"blocking={dead_end_inference_tracker.blocking_reason} "
+                f"mode={dead_end_inference_tracker.confirmation_mode} "
+                f"confirmed={dead_end_inference_tracker.confirmed} "
+                f"depth={dead_end_inference_tracker.confirmed_depth:.1f}"
+            ),
+            (
+                "Effective width: "
+                + " | ".join(
+                    f"{branch}={effective_branch_widths.get(branch, 0.0):.1f}"
+                    for branch in BRANCHES
+                )
+            ),
+            f"States: U={branch_states['UP']} L={branch_states['LEFT']} R={branch_states['RIGHT']}",
+            f"Base comm={communication_stats['connected']}/{len(robots)} | hop={communication_stats['max_hop']} | margin={communication_stats['margin']:.1f}",
+            (
+                f"Comm control={COMM_CONTROL_POLICY_VERSION} | "
+                f"guarded={communication_guarded_count} | "
+                f"max parent gap={communication_max_parent_distance:.1f}/"
+                f"{COMM_GUARD_HARD_LIMIT:.1f}"
+            ),
+            (
+                f"Backtrack bridge={BACKTRACK_BRIDGE_POLICY_VERSION} | "
+                f"risk={backtrack_bridge_stats['risk']} "
+                f"required={backtrack_bridge_stats['required']} "
+                f"guards={backtrack_bridge_stats['guards']} "
+                f"settled={backtrack_bridge_stats['settled']} "
+                f"ready={backtrack_bridge_stats['ready']}"
+            ),
+            (
+                f"Natural bridge k="
+                f"{backtrack_bridge_stats['natural_redundancy']} "
+                f"margin={backtrack_bridge_stats['natural_margin']:.1f} | "
+                f"links B={backtrack_bridge_stats['base_links']} "
+                f"{active_branch}={backtrack_bridge_stats['branch_links']}"
+            ),
+            f"Base direct={communication_stats['direct']} | Breadcrumbs={len(get_active_branch_relays(robots))}",
+            f"Front comm ratio={front_comm['connected_ratio']:.2f} | relay need={front_comm['needs_relay']}",
+            f"Reactive relays={len(get_relays(robots))} | preplanned slots=0",
+            f"Branch robots normal={normal_count} relay={relay_count} shepherd={shepherd_count}",
+            f"Saturation: tip={saturation_tracker.tip_count} slow={saturation_tracker.low_speed_ratio:.2f}",
+            (
+                f"density={saturation_tracker.average_density_ratio:.2f} "
+                f"occupancy={saturation_tracker.occupancy_ratio:.2f} "
+                f"width={saturation_tracker.lateral_coverage_ratio:.2f}"
+            ),
+            (
+                f"Saturation policy={SATURATION_POLICY_VERSION} | "
+                f"start={PRESSURE_START_POLICY_VERSION} | "
+                f"geometric count={saturation_tracker.tip_count}/"
+                f"{saturation_tracker.packed_min_count}"
+            ),
+            (
+                f"front_delta={saturation_tracker.front_delta:.2f} "
+                f"dwell={saturation_tracker.dwell:.2f} "
+                f"mode={saturation_tracker.recognition_mode} "
+                f"saturated={saturation_tracker.saturated}"
+            ),
+            (
+                "Branch fill continuity: "
+                f"min-slice={branch_continuity_tracker.minimum_slice_count}/"
+                f"{BRANCH_CONTINUITY_MIN_ROBOTS_PER_SLICE} | "
+                f"coverage={branch_continuity_tracker.covered_slice_ratio:.2f}/"
+                f"{BRANCH_CONTINUITY_REQUIRED_SLICE_RATIO:.2f} | "
+                f"gap={branch_continuity_tracker.maximum_depth_gap:.1f}/"
+                f"{BRANCH_CONTINUITY_MAX_DEPTH_GAP:.1f} | "
+                f"dwell={branch_continuity_tracker.dwell:.2f} "
+                f"ready={branch_continuity_tracker.ready}"
+            ),
+            (
+                f"SPH reference spacing={REFERENCE_EQUILIBRIUM_SPACING:.1f} | "
+                f"fill planning={branch_fill_planning_spacing(active_branch):.1f}"
+            ),
+            f"Shepherd target={adaptive_shepherd_count()} | formed={shepherd_boundary_formed(robots)} | pressure t={pressure_push_timer:.2f}",
+            (
+                f"Election={SHEPHERD_ELECTION_POLICY_VERSION} | "
+                f"candidates={shepherd_candidate_count}/"
+                f"{adaptive_shepherd_count()}"
+            ),
+            (
+                f"Shepherd control=LOCAL_ONLY | "
+                f"active={len(get_shepherds(robots))} | "
+                f"pre={len(get_pre_shepherds(robots))} "
+                f"branch={pre_shepherd_branch or '-'} | "
+                f"pre-pack={pre_shepherd_pack_ready} "
+                f"dwell={pre_shepherd_pack_dwell:.2f} | "
+                f"drain={draining_branch or '-'}"
+            ),
+            (
+                f"Motion={MOTION_POLICY_VERSION} | "
+                f"Shepherd={SHEPHERD_POLICY_VERSION}"
+            ),
+            f"Shepherd pipeline={SHEPHERD_PIPELINE_POLICY_VERSION}",
+            (
+                f"Goal={GOAL_POLICY_VERSION} | "
+                f"Goal avg={average_goal_force:.1f} | "
+                f"bias={WEAK_BRANCH_BIAS_FORCE:.1f}"
+            ),
+            (
+                f"Force avg: SPH={average_sph_pressure_force:.1f} | "
+                f"Goal={average_goal_force:.1f}"
+            ),
+            f"Pressure policy={PRESSURE_POLICY_VERSION}",
+            (
+                f"Final gate={FINAL_GATE_POLICY_VERSION} | "
+                f"branch robots={return_branch_robot_count}"
+            ),
+            (
+                f"Return status: B={return_bottom_count}/"
+                f"{return_mobile_target_count(robots)} "
+                f"J={return_junction_count} "
+                f"special={return_special_count} "
+                f"pending-trunk={return_trunk_release_pending} "
+                f"done-dwell={return_done_dwell:.2f}/"
+                f"{RETURN_DONE_DWELL_TIME:.2f}"
+            ),
+            (
+                f"Shepherd line depth={get_shepherd_line_depth(active_branch):.1f} "
+                f"| max slot error={shepherd_line_error:.2f}"
+            ),
+            f"Distance total={sum(robot.total_distance for robot in robots):.0f} | disconnect robot-s={metrics.disconnected_robot_seconds:.1f}",
+        ]
+        draw_hud_panel(screen, hud_lines)
+        pygame.display.flip()
+        if capture_directory is not None:
+            capture_signature = (
+                phase.name,
+                active_branch,
+                junction_guard_status
+                if phase == SimulationPhase.FORM_JUNCTION_GUARDS
+                else "-",
+                int(frontier_line_depth // max(40.0 * MAP_SCALE, 1.0))
+                if phase == SimulationPhase.EXPLORE_BRANCH
+                else -1,
+                dead_end_inference_tracker.confirmed,
             )
-            capture_path = capture_directory / capture_name
-            pygame.image.save(screen, capture_path)
-            print(f"[Capture] {capture_path}")
+            if capture_signature != capture_last_signature:
+                capture_last_signature = capture_signature
+                capture_name = (
+                    f"{headless_frame_count:05d}_{phase.name}_"
+                    f"{active_branch}_{max(0, round(frontier_line_depth)):04d}.png"
+                )
+                capture_path = capture_directory / capture_name
+                pygame.image.save(screen, capture_path)
+                print(f"[Capture] {capture_path}")
 
-if not metrics.saved:
-    save_experiment_logs(robots, "USER_EXIT")
-pygame.quit()
-sys.exit()
+    if os.environ.get("SPH_DFS_LIBRARY_MODE", "0") != "1":
+        if not metrics.saved:
+            save_experiment_logs(robots, "USER_EXIT")
+        pygame.quit()
+        sys.exit()
