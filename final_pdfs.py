@@ -343,6 +343,12 @@ BACKTRACK_FLOW_EVAL_HOPS = 3.0
 # Initial Shepherd formation
 ENTRANCE_CAPTURE_MARGIN = 2.0 * SIMULATION_LENGTH_SCALE
 
+# Branch entrance보다 Junction 쪽에서
+# 얼마나 일찍 Initial Shepherd로 인정할지
+ENTRANCE_DEPTH_CAPTURE_MARGIN = (
+    5.0 * SIMULATION_LENGTH_SCALE
+)
+
 INITIAL_SHEPHERD_HOPS = 2
 
 INITIAL_SHEPHERD_SEED_DEPTH_RATIO = 1.5
@@ -3292,7 +3298,7 @@ def robot_is_at_branch_entrance(
         depth
         >= -(
             radius
-            + ENTRANCE_CAPTURE_MARGIN
+            + ENTRANCE_DEPTH_CAPTURE_MARGIN
         )
     )
 
@@ -3605,12 +3611,11 @@ def collect_initial_shepherd_hop_region(
 ]:
 
     """
-    Branch 내부의 가장 깊은 Shepherd를 Hop 0으로 잡고,
-    Branch entrance 방향으로 communication hop을 센다.
+    Branch entrance 바로 안쪽의 Shepherd를 Hop 0으로 잡고,
+    Branch 내부 방향으로 communication hop을 확장한다.
 
-    2-hop 존재 여부는 freeze trigger로만 사용한다.
-    Branch 내부에 들어온 candidate robot들은 모두 Shepherd membership을
-    유지한다.
+    Hop 0, Hop 1, Hop 2의 3-layer topology를
+    Initial Shepherd formation의 기준으로 사용한다.
     """
 
     local_position_by_id = {
@@ -3637,6 +3642,12 @@ def collect_initial_shepherd_hop_region(
     depth_tolerance = (
         INITIAL_SHEPHERD_HOP_DEPTH_TOLERANCE_RATIO
         * environment.GRID_SPACING
+    )
+    # Branch mouth 바로 앞쪽에 걸쳐 있는 robot도
+    # Hop 0 후보로 인정하기 위한 최소 depth
+    min_hop_depth = -(
+        environment.ROBOT_RADIUS
+        + ENTRANCE_DEPTH_CAPTURE_MARGIN
     )
 
     # =============================================
@@ -3666,28 +3677,35 @@ def collect_initial_shepherd_hop_region(
             axis
         )
 
-        # Branch entrance 안쪽 robot만 hop topology에 사용한다.
-        if depth < 0.0:
+    
+        # Branch mouth를 걸치고 있는 Shepherd까지
+        # Hop topology에 포함한다.
+        if depth < min_hop_depth:
             continue
 
         depth_by_id[robot_id] = depth
 
     # =============================================
     # Hop 0:
-    # Branch에서 가장 깊이 들어간 front layer.
+    # Branch entrance에 가장 가까운 첫 Shepherd layer
     # =============================================
 
     if not depth_by_id:
         return set(), [set()]
-
-    max_depth = max(depth_by_id.values())
-    front_layer_depth_margin = environment.GRID_SPACING
+    entrance_layer_depth = (
+        INITIAL_SHEPHERD_SEED_DEPTH_RATIO
+        * environment.GRID_SPACING
+    )
 
     seed_ids = {
         robot_id
         for robot_id, depth
         in depth_by_id.items()
-        if depth >= max_depth - front_layer_depth_margin
+        if (
+            min_hop_depth
+            <= depth
+            <= entrance_layer_depth
+        )
     }
 
     layers: list[
@@ -3772,13 +3790,13 @@ def collect_initial_shepherd_hop_region(
                     ]
                 )
 
-                # 다음 hop은 entrance 방향으로 이어져야 한다.
-                # SPH 불규칙성에 따른 작은 depth 역전만 허용한다.
+                # 다음 hop은 Branch 안쪽으로 이어져야 한다.
+                # candidate가 source보다 지나치게 entrance 쪽이면 제외.
                 if (
                     candidate_depth
-                    >
+                    <
                     source_depth
-                    + depth_tolerance
+                    - depth_tolerance
                 ):
                     continue
 
@@ -3794,10 +3812,139 @@ def collect_initial_shepherd_hop_region(
             next_layer
         )
 
+    hop_region_ids = set().union(
+    *layers
+    )
+
     return (
-        set(depth_by_id),
+        hop_region_ids,
         layers,
     )
+
+
+def shepherd_hop_layer_is_fully_covered(
+    observation: LocalObservation,
+    branch: dict,
+    layer_ids: set[int],
+) -> tuple[bool, float]:
+
+    if not layer_ids:
+        return False, float("inf")
+
+    local_position_by_id = {
+        robot_id: local_position
+        for robot_id, local_position
+        in zip(
+            observation.robot_ids,
+            observation.relative_positions,
+        )
+    }
+
+    entrance_midpoint = (
+        branch["entrance_midpoint"]
+    )
+
+    tangent = (
+        branch["entrance_tangent"]
+    ).normalize()
+
+    entrance_width = (
+        branch["entrance_b"]
+        - branch["entrance_a"]
+    ).length()
+
+    half_width = (
+        0.5 * entrance_width
+    )
+
+    coverage_half_span = max(
+        environment.ROBOT_RADIUS,
+        0.5 * environment.GRID_SPACING,
+    )
+
+    intervals = []
+
+    for robot_id in layer_ids:
+
+        position = (
+            local_position_by_id.get(
+                robot_id
+            )
+        )
+
+        if position is None:
+            continue
+
+        lateral = (
+            position
+            - entrance_midpoint
+        ).dot(
+            tangent
+        )
+
+        # midpoint 기준 좌표를
+        # [0, entrance_width] 좌표로 변환
+        center = (
+            lateral
+            + half_width
+        )
+
+        left = max(
+            0.0,
+            center - coverage_half_span,
+        )
+
+        right = min(
+            entrance_width,
+            center + coverage_half_span,
+        )
+
+        if right >= left:
+            intervals.append(
+                (left, right)
+            )
+
+    if not intervals:
+        return False, entrance_width
+
+    intervals.sort()
+
+    covered_until = 0.0
+    max_gap = 0.0
+
+    for left, right in intervals:
+
+        if left > covered_until:
+            max_gap = max(
+                max_gap,
+                left - covered_until,
+            )
+
+        covered_until = max(
+            covered_until,
+            right,
+        )
+
+    if covered_until < entrance_width:
+
+        max_gap = max(
+            max_gap,
+            entrance_width
+            - covered_until,
+        )
+
+    gap_tolerance = (
+        1.5
+        * environment.GRID_SPACING
+    )
+
+    covered = (
+        max_gap
+        <= gap_tolerance
+    )
+
+    return covered, max_gap
+
 
 def form_initial_junction_shepherd_boundaries(
     observation: LocalObservation,
@@ -3935,11 +4082,46 @@ def form_initial_junction_shepherd_boundaries(
                     not robot.role_frozen
                 ):
                     continue
+             # =================================================
+            # DEBUG: Initial Shepherd candidate
+            # =================================================
+
+            entrance_midpoint = branch["entrance_midpoint"]
+            axis = branch["branch_axis"].normalize()
+            tangent = branch["entrance_tangent"].normalize()
+
+            offset = local_position - entrance_midpoint
+
+            depth = offset.dot(axis)
+            lateral = offset.dot(tangent)
+
+            entrance_width = (
+                branch["entrance_b"]
+                - branch["entrance_a"]
+            ).length()
+
+            half_width = 0.5 * entrance_width
+
+            if robot.role == "NORMAL":
+                print(
+                    "[InitialShepherdCandidateDebug] "
+                    f"id={robot_id} "
+                    f"branch={branch_id} "
+                    f"depth={depth:.2f} "
+                    f"lateral={lateral:.2f} "
+                    f"limit="
+                    f"{half_width + environment.ROBOT_RADIUS + ENTRANCE_CAPTURE_MARGIN:.2f} "
+                    f"received="
+                    f"{robot_id in junction_message_received_ids} "
+                    f"los="
+                    f"{robot_has_direct_anchor_los(robot_id, observation)}"
+                )
+
 
             # =================================================
             # ⑤ 실제 Branch entrance에 들어온 robot인가?
             # =================================================
-
+            
             if not robot_is_at_branch_entrance(
                 local_position,
                 branch,
@@ -3950,21 +4132,7 @@ def form_initial_junction_shepherd_boundaries(
                 robot_id
             )
             
-                    # =================================================
-        # 현재 Branch 후보들 중
-        # entrance에서 시작되는 3-hop topology 계산
-        # =================================================
-
-        (
-            hop_region_ids,
-            hop_layers,
-        ) = (
-            collect_initial_shepherd_hop_region(
-                observation,
-                branch,
-                current_ids,
-            )
-        )
+        
 
         previous_ids = set(
             state[
@@ -4009,14 +4177,13 @@ def form_initial_junction_shepherd_boundaries(
             print(
                 "[InitialShepherdAssigned] "
                 f"branch={branch_id} "
-                f"new="
-                f"{sorted(newly_assigned)} "
-                f"current="
-                f"{len(current_ids)}"
+                f"new={sorted(newly_assigned)} "
+                f"current={len(current_ids)}"
             )
 
+
         # =================================================
-        # 현재 Shepherd 위치
+        # 1. 현재 Initial Shepherd 위치
         # =================================================
 
         shepherd_positions = [
@@ -4031,12 +4198,11 @@ def form_initial_junction_shepherd_boundaries(
             in local_position_by_id
         ]
 
-        # =================================================
-        # entrance coverage 검사
-        # =================================================
 
         # =================================================
-        # entrance 폭이 실제로 막혔는지 검사
+        # 2. Branch mouth 전체가 실제로 막혔는지 검사
+        #
+        # 입구 폭 전체에 큰 gap이 없어야 한다.
         # =================================================
 
         (
@@ -4049,39 +4215,89 @@ def form_initial_junction_shepherd_boundaries(
             )
         )
 
+
         # =================================================
-        # Hop 2까지 Shepherd topology가 형성됐는지
+        # 3. Branch entrance에서 시작하는
+        #    Hop0 -> Hop1 -> Hop2 topology 계산
         # =================================================
+
+        (
+            hop_region_ids,
+            hop_layers,
+        ) = (
+            collect_initial_shepherd_hop_region(
+                observation,
+                branch,
+                shepherd_ids,
+            )
+        )
+
+
+        # =================================================
+        # 4. 필요한 3개 layer가 모두 존재하는가?
+        #
+        # INITIAL_SHEPHERD_HOPS = 2
+        #
+        # Hop0
+        # Hop1
+        # Hop2
+        #
+        # 총 3개 layer
+        # =================================================
+
+        required_layer_count = (
+            INITIAL_SHEPHERD_HOPS
+            + 1
+        )
 
         required_hop_ready = (
             len(hop_layers)
-            >
-            INITIAL_SHEPHERD_HOPS
+            >= required_layer_count
+
             and
-            len(
-                hop_layers[
-                    INITIAL_SHEPHERD_HOPS
-                ]
+
+            all(
+                len(
+                    hop_layers[
+                        hop_index
+                    ]
+                )
+                > 0
+
+                for hop_index
+                in range(
+                    required_layer_count
+                )
             )
-            > 0
         )
 
-        # =================================================
-        # 최종 완료 조건
-        #
-        # Branch 최전방 Hop 0에서 entrance 쪽으로 필요한 hop 수가
-        # 연결되면, 해당 Branch Shepherd 전체를 고정한다.
-        # =================================================
-
-        sealed = (
-             mouth_sealed
-        )
 
         hop_counts = [
             len(layer)
             for layer
             in hop_layers
         ]
+
+
+        # =================================================
+        # 5. Initial Shepherd formation 완료 조건
+        #
+        # 조건 A:
+        #   Branch mouth 전체가 실제로 막힘
+        #
+        # 조건 B:
+        #   entrance부터 Hop0/Hop1/Hop2 형성
+        #
+        # 둘 다 만족하는 순간
+        # 이 Branch의 Initial Shepherd 전체를 정지시킨다.
+        # =================================================
+
+        sealed = (
+            mouth_sealed
+            and
+            required_hop_ready
+        )
+
 
         role_debug(
             f"initial-shepherd-{branch_id}",
@@ -4091,24 +4307,39 @@ def form_initial_junction_shepherd_boundaries(
                 f"shepherds={len(shepherd_ids)} "
                 f"hop_counts={hop_counts} "
                 f"mouth_sealed={mouth_sealed} "
-                f"required_hop_ready={required_hop_ready} "
+                f"required_hop_ready="
+                f"{required_hop_ready} "
                 f"max_gap={max_gap:.3f} "
                 f"sealed={sealed}"
             ),
         )
 
-        # 아직 부족하면 freeze하지 않음.
-        # 다음 frame에도 SPH 팽창 계속.
+
+        # =================================================
+        # 아직 입구 봉쇄 + 3-hop이 완성되지 않았으면
+        # 계속 SPH로 formation
+        # =================================================
+
         if not sealed:
             continue
 
+
         # =================================================
-        # 지금 이 순간 entrance를 막고 있는
-        # Shepherd들만 즉시 고정
+        # 6. 완료 순간
+        #    현재 Initial Shepherd 전체 즉시 freeze
         # =================================================
 
-        for robot_id in state["initial_shepherd_ids"]:
-            robot = robots_by_id[robot_id]
+        frozen_ids = set(
+            shepherd_ids
+        )
+
+        for robot_id in frozen_ids:
+
+            robot = (
+                robots_by_id[
+                    robot_id
+                ]
+            )
 
             freeze_role_robot(
                 robot,
@@ -4116,20 +4347,31 @@ def form_initial_junction_shepherd_boundaries(
                 branch_id,
             )
 
+
+        # =================================================
+        # 7. Branch state 확정
+        # =================================================
+
+        state[
+            "initial_shepherd_ids"
+        ] = set(
+            frozen_ids
+        )
+
         state[
             "initial_sealed"
         ] = True
 
+
         print(
             "[InitialShepherdBoundaryLocked] "
             f"branch={branch_id} "
-            f"count="
-            f"{len(state['initial_shepherd_ids'])} "
-            f"ids={sorted(state['initial_shepherd_ids'])} "
-            f"max_gap="
-            f"{max_gap:.3f}"
+            f"count={len(frozen_ids)} "
+            f"hop_counts={hop_counts} "
+            f"mouth_sealed={mouth_sealed} "
+            f"max_gap={max_gap:.3f} "
+            f"ids={sorted(frozen_ids)}"
         )
-
     return all(
         branch_states[
             branch["id"]
@@ -8521,7 +8763,7 @@ def main() -> None:
 
     # 로봇 수 증가
     environment.ROBOT_COUNT = (
-        850
+        650
     )
 
     environment.ROBOT_RADIUS = (
@@ -8552,7 +8794,7 @@ def main() -> None:
         environment.SMOOTHING_LENGTH
     )
 
-    REFERENCE_DENSITY = 0.095
+    REFERENCE_DENSITY = 0.065
 
     # 이 값은 reference density 계산에는 더 이상 사용하지 않는다.
     # 다른 spacing 관련 로직이 사용할 수 있으므로 삭제하지 않음
@@ -8925,9 +9167,7 @@ def main() -> None:
         0
     )
 
-    # 코너를 돈 뒤 새 Shepherd를 모집하는 중인지
-    backtrack_recruit_from_corner = False
-
+   
     # 새 corridor에 제대로 들어왔는지 연속 확인
     backtrack_corner_exit_stable_count = 0
 
@@ -10080,215 +10320,223 @@ def main() -> None:
                             "without active branch."
                         )
 
-                    # Anchor 뒤 COMM_RANGE 안 NORMAL crowd가 required를
-                    # 처음 만족한 순간의 topology를 그대로 capture한다.
-                    # 코너 RELEASE 전까지 membership은 다시 선정하지 않는다.
+                    #=====================================================                  
+                    # Backtracking Shepherd recruitment
+                    #
+                    # Terminal event:
+                    #   DEAD_END or MARKER
+                    #
+                    # Hop 0:
+                    #   Anchor에 가장 가까운 NORMAL seed
+                    #
+                    # Hop 1:
+                    #   seed와 직접 COMM_RANGE 이웃
+                    #
+                    # Hop 2:
+                    #   Hop 1과 직접 COMM_RANGE 이웃
+                    #
+                    # 한 번 capture한 cohort는
+                    # Parent Junction 복귀 전까지 절대 재선정하지 않는다.
+                    # =====================================================
+
                     if not backtrack_formation_ids:
 
-                        captured_ids: list[int] = []
+                        # =============================================
+                        # 1. Hop 0 seed 선정
+                        # =============================================
 
-                        # =====================================================
-                        # DEAD_END:
-                        # LiDAR wall WL~WR 전체에 1-hop layer가 찰 때까지 기다림
-                        # =====================================================
+                        if backtrack_seed_id is None:
 
-                        if (
-                            backtrack_trigger_reason
-                            == "DEAD_END"
-                        ):
-
-                            (
-                                wall_ready,
-                                wall_robot_ids,
-                                wall_width,
-                                max_gap,
-                            ) = (
-                                detect_complete_dead_end_wall_layer(
+                            backtrack_seed_id = (
+                                find_backtracking_seed(
                                     observation,
                                     robots_by_id,
                                 )
                             )
 
+                        # 아직 Anchor 근처에 seed가 될 NORMAL이 없음.
+                        # Anchor는 정지하고 NORMAL swarm은 SPH로 계속 이동.
+                        if backtrack_seed_id is None:
+
                             role_debug(
-                                "dead-end-wall-layer",
+                                "backtrack-seed-wait",
                                 (
-                                    "[DeadEndWallLayer] "
-                                    f"width={wall_width:.2f} "
-                                    f"robots={len(wall_robot_ids)} "
-                                    f"max_gap={max_gap:.3f} "
-                                    f"ready={wall_ready}"
+                                    "[BacktrackingSeedWait] "
+                                    f"branch={active_branch_id} "
+                                    f"reason={backtrack_trigger_reason} "
+                                    "seed=None"
                                 ),
                             )
 
-                            # 아직 WL~WR 전체가 안 찼으면
-                            # Anchor는 계속 정지.
-                            # NORMAL은 SPH로 계속 벽 쪽에 쌓임.
-                            if not wall_ready:
-
-                                captured_ids = []
-
-                            else:
-
-                                # 중요:
-                                # 개수만큼 자르지 않는다.
-                                # 실제 wall 1-hop layer 전체를 Shepherd로 사용.
-                                captured_ids = sorted(
-                                    wall_robot_ids
-                                )
-
-                        # =====================================================
-                        # MARKER는 기존 모집 방식 유지
-                        # =====================================================
-
                         else:
 
-                            anchor_nearby_ids = (
-                                get_anchor_nearby_backtracking_normals(
+                            # =============================================
+                            # 2. Seed 기준 Hop 0 / 1 / 2 수집
+                            # =============================================
+
+                            (
+                                cohort_ids,
+                                hop_layers,
+                            ) = (
+                                collect_backtracking_seed_one_two_hop(
                                     observation,
                                     robots_by_id,
+                                    backtrack_seed_id,
                                 )
                             )
 
-                            backtrack_required_count = (
-                                required_backtracking_crowd_count(
-                                    backtrack_required_width
-                                )
+                            hop_counts = [
+                                len(layer)
+                                for layer in hop_layers
+                            ]
+
+                            role_debug(
+                                "backtrack-seed-hop",
+                                (
+                                    "[BacktrackingSeedHop] "
+                                    f"branch={active_branch_id} "
+                                    f"seed={backtrack_seed_id} "
+                                    f"hop_counts={hop_counts} "
+                                    f"cohort={len(cohort_ids)}"
+                                ),
                             )
 
-                            if (
-                                len(anchor_nearby_ids)
-                                >= backtrack_required_count
-                            ):
+                            # seed가 사라졌거나 더 이상 유효하지 않으면
+                            # 다음 frame에 다시 seed를 선정.
+                            if not cohort_ids:
 
-                                local_position_by_id = {
-                                    robot_id: local_position
-
-                                    for (
-                                        robot_id,
-                                        local_position,
-                                    )
-
-                                    in zip(
-                                        observation.robot_ids,
-                                        observation.relative_positions,
-                                    )
-                                }
-
-                                captured_ids = sorted(
-                                    anchor_nearby_ids,
-                                    key=lambda robot_id:
-                                    local_position_by_id[
-                                        robot_id
-                                    ].length(),
-                                )[
-                                    :backtrack_required_count
-                                ]
-
-                        # =====================================================
-                        # C. Shepherd cohort 확보 완료
-                        # =====================================================
-
-                        if captured_ids:
-
-                            backtrack_formation_ids = set(
-                                captured_ids
-                            )
-
-                            # 기존 변수명은 유지하지만
-                            # line formation order가 아니라
-                            # same-cohort ID container로 사용.
-                            backtrack_chain_order = list(
-                                captured_ids
-                            )
-
-                            # =================================================
-                            # 위치 이동 없음.
-                            # 이미 dead-end wall이 만든 자연스러운 대형 그대로
-                            # NORMAL -> SHEPHERD + PUSH.
-                            # =================================================
-
-                            activate_backtracking_shepherds_in_place(
-                                captured_ids,
-                                robots_by_id,
-                                active_branch_id,
-                            )
-
-                            branch_states[
-                                active_branch_id
-                            ][
-                                "backtrack_shepherd_ids"
-                            ] = set(
-                                captured_ids
-                            )
-
-                            # =================================================
-                            # Return direction
-                            # =================================================
-
-                            if backtrack_recruit_from_corner:
-
-                                backtrack_push_yaw_deg = ( #정션으로 돌아갈 방향 설정
-                                    anchor_yaw_deg
-                                )
-
-                                push_source = (
-                                    "AFTER_CORNER"
-                                )
+                                backtrack_seed_id = None
 
                             else:
 
-                                # Dead-end를 보고 있던 방향의 정확히 반대가
-                                # Junction return direction.
-                                backtrack_push_yaw_deg = (
-                                    normalize_angle(
-                                        anchor_yaw_deg
-                                        + 180.0
+                                # =============================================
+                                # 3. Hop 0~2 전체를 Shepherd formation으로 확정
+                                #
+                                # 여기서 required_count로 잘라내지 않는다.
+                                # 0/1/2 hop에 포함된 NORMAL 전체가 Shepherd.
+                                # =============================================
+
+                                formation_ready = (
+                                    start_backtracking_shepherd_formation(
+                                        observation,
+                                        set(cohort_ids),
+                                        robots_by_id,
+                                        backtrack_seed_id,
+                                        active_branch_id,
+                                        backtrack_event_valid,
                                     )
                                 )
 
-                                push_source = (
-                                    "TERMINAL_EVENT"
-                                )
+                                if formation_ready:
 
-                            anchor_yaw_deg = (
-                                backtrack_push_yaw_deg
-                            )
+                                    captured_ids = sorted(
+                                        cohort_ids
+                                    )
 
-                            backtrack_recruit_from_corner = (
-                                False
-                            )
+                                    # =========================================
+                                    # 4. 같은 cohort를 즉시 PUSH mode로 전환
+                                    # =========================================
 
-                            backtrack_reverse_stable_count = (
-                                0
-                            )
+                                    push_ready = (
+                                        prepare_backtracking_shepherd_push(
+                                            observation,
+                                            captured_ids,
+                                            robots_by_id,
+                                            backtrack_seed_id,
+                                            active_branch_id,
+                                        )
+                                    )
 
-                            # 기존 wall / robot 관통 방지 로직 유지.
-                            backtrack_wall_detach_resume_mode = (
-                                "PRESSURE_PUSH"
-                            )
+                                    if not push_ready:
 
-                            anchor_motion_mode = (
-                                "BACKTRACK_WALL_DETACH"
-                            )
+                                        # FORM relay 일부만 성공한 비정상 상황이면
+                                        # 다시 NORMAL로 복구하고 재시도.
+                                        release_shepherd_group(
+                                            set(cohort_ids),
+                                            robots_by_id,
+                                        )
 
-                            print(
-                                "[BacktrackingTopologyCaptured] "
-                                f"branch={active_branch_id} "
-                                f"capture_source={capture_source} "
-                                f"hops="
-                                f"{BACKTRACK_DEAD_END_WALL_HOPS} "
-                                f"hop_counts={hop_counts} "
-                                f"required="
-                                f"{backtrack_required_count} "
-                                f"captured="
-                                f"{len(captured_ids)} "
-                                f"ids={captured_ids} "
-                                "return_yaw="
-                                f"{backtrack_push_yaw_deg:.2f} "
-                                f"source={push_source} "
-                                "position_jump=0 "
-                                "reformation=False"
-                            )
+                                        backtrack_seed_id = None
+
+                                    else:
+
+                                        # =====================================
+                                        # 5. Shepherd membership LOCK
+                                        #
+                                        # 이 시점 이후에는
+                                        # seed / hop / cohort 재선정 금지.
+                                        # =====================================
+
+                                        backtrack_formation_ids = set(
+                                            captured_ids
+                                        )
+
+                                        # 기존 변수명을 유지하지만
+                                        # 더 이상 line order가 아니라
+                                        # locked Shepherd cohort ID container.
+                                        backtrack_chain_order = list(
+                                            captured_ids
+                                        )
+
+                                        branch_states[
+                                            active_branch_id
+                                        ][
+                                            "backtrack_shepherd_ids"
+                                        ] = set(
+                                            captured_ids
+                                        )
+
+                                        backtrack_required_count = (
+                                            len(captured_ids)
+                                        )
+
+                                        # =====================================
+                                        # 6. Junction return direction
+                                        #
+                                        # Terminal event를 바라보고 있던
+                                        # Anchor heading의 정확히 반대 방향.
+                                        # =====================================
+
+                                        backtrack_push_yaw_deg = (
+                                            normalize_angle(
+                                                anchor_yaw_deg
+                                                + 180.0
+                                            )
+                                        )
+
+                                        anchor_yaw_deg = (
+                                            backtrack_push_yaw_deg
+                                        )
+
+                                        backtrack_reverse_stable_count = (
+                                            0
+                                        )
+
+                                        # =====================================
+                                        # 7. 기존 collision / wall recovery 유지
+                                        # =====================================
+
+                                        backtrack_wall_detach_resume_mode = (
+                                            "PRESSURE_PUSH"
+                                        )
+
+                                        anchor_motion_mode = (
+                                            "BACKTRACK_WALL_DETACH"
+                                        )
+
+                                        print(
+                                            "[BacktrackingTopologyCaptured] "
+                                            f"branch={active_branch_id} "
+                                            f"reason={backtrack_trigger_reason} "
+                                            f"seed={backtrack_seed_id} "
+                                            f"hop_counts={hop_counts} "
+                                            f"captured={len(captured_ids)} "
+                                            f"ids={captured_ids} "
+                                            f"return_yaw="
+                                            f"{backtrack_push_yaw_deg:.2f} "
+                                            "topology_locked=True "
+                                            "reformation=False"
+                                        )
 
             elif (
                 anchor_motion_mode
@@ -10919,150 +11167,6 @@ def main() -> None:
                             "recruit=False"
                         )
 
-                # =====================================================
-                # 이전 Shepherd는 모두 NORMAL.
-                #
-                # Anchor만 LiDAR free gap을 따라
-                # 코너를 회전하여 새 corridor로 들어간다.
-                # =====================================================
-
-                target_gap_angle = (
-                    find_branch_free_gap(
-                        observation.lidar_scan
-                    )
-                )
-
-                if (
-                    target_gap_angle
-                    is None
-                ):
-
-                    stop_anchor(
-                        anchor
-                    )
-
-                    backtrack_corner_exit_stable_count = (
-                        0
-                    )
-
-                    role_debug(
-                        "backtrack-corner-gap-wait",
-                        (
-                            "[BacktrackCornerTurnWait] "
-                            f"branch={active_branch_id} "
-                            "reason=NO_FREE_GAP"
-                        ),
-                    )
-
-                else:
-
-                    (
-                        anchor_yaw_deg,
-                        _corner_delta,
-                    ) = (
-                        move_anchor_through_free_gap(
-                            anchor,
-                            observation.lidar_scan,
-                            anchor_yaw_deg,
-                            target_gap_angle,
-                            substep_dt,
-                        )
-                    )
-
-                    corridor_reacquired = (
-                        backtrack_corridor_reacquired(
-                            observation.lidar_scan,
-                            target_gap_angle,
-                        )
-                    )
-
-                    if (
-                        substep_index
-                        == 0
-                    ):
-
-                        if corridor_reacquired:
-
-                            backtrack_corner_exit_stable_count += (
-                                1
-                            )
-
-                        else:
-
-                            backtrack_corner_exit_stable_count = (
-                                0
-                            )
-
-                        print(
-                            "[BacktrackCornerTurn] "
-                            f"branch={active_branch_id} "
-                            "corner_index="
-                            f"{backtrack_corner_count} "
-                            "gap_angle="
-                            f"{target_gap_angle:.2f} "
-                            f"aligned={corridor_reacquired} "
-                            "stable="
-                            f"{backtrack_corner_exit_stable_count}/"
-                            f"{BACKTRACK_CORNER_EXIT_STABLE_SCANS}"
-                        )
-
-                    # =================================================
-                    # 새로운 straight corridor 진입 완료
-                    # → Anchor 정지
-                    # → 주변 NORMAL 다시 모집
-                    # =================================================
-
-                    if (
-                        backtrack_corner_exit_stable_count
-                        >=
-                        BACKTRACK_CORNER_EXIT_STABLE_SCANS
-                    ):
-
-                        stop_anchor(
-                            anchor
-                        )
-
-                        backtrack_required_width = (
-                            estimate_current_corridor_width(
-                                observation.lidar_scan
-                            )
-                        )
-
-                        backtrack_seed_id = (
-                            None
-                        )
-
-                        backtrack_required_count = (
-                            0
-                        )
-
-                        backtrack_recruit_from_corner = (
-                            True
-                        )
-
-                        backtrack_corner_exit_stable_count = (
-                            0
-                        )
-
-                        # 새 straight corridor를 기준으로
-                        # Junction entrance detector도 다시 학습.
-                        reset_junction_entrance_detector(
-                            anchor_lidar
-                        )
-
-                        anchor_motion_mode = (
-                            "BACKTRACK_WAIT_SHEPHERD"
-                        )
-
-                        print(
-                            "[BacktrackCornerExit] "
-                            f"branch={active_branch_id} "
-                            "corner_index="
-                            f"{backtrack_corner_count} "
-                            "corridor_width="
-                            f"{backtrack_required_width:.2f}"
-                        )
-
 
             elif (
                 anchor_motion_mode
@@ -11610,6 +11714,8 @@ def main() -> None:
                 ][
                     "initial_shepherd_ids"
                 ].clear()
+
+                
 
                 branch_states[
                     active_branch_id
