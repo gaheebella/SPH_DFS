@@ -8521,7 +8521,7 @@ def main() -> None:
 
     # 로봇 수 증가
     environment.ROBOT_COUNT = (
-        750
+        850
     )
 
     environment.ROBOT_RADIUS = (
@@ -8552,10 +8552,13 @@ def main() -> None:
         environment.SMOOTHING_LENGTH
     )
 
+    REFERENCE_DENSITY = 0.095
+
+    # 이 값은 reference density 계산에는 더 이상 사용하지 않는다.
+    # 다른 spacing 관련 로직이 사용할 수 있으므로 삭제하지 않음
     environment.REFERENCE_EQUILIBRIUM_SPACING = (
         5.0 * SIMULATION_LENGTH_SCALE
     )
-
     # 벽 충돌 후 더 강하게 반사
     environment.INITIAL_WALL_RESTITUTION = (
         0.20
@@ -8563,7 +8566,7 @@ def main() -> None:
 
     # SPH pressure 증가
     environment.PRESSURE_GAIN = (
-        500.0 * SIMULATION_LENGTH_SCALE**2
+        750.0 * SIMULATION_LENGTH_SCALE**2
     )
 
     environment.VISCOSITY_XI1 = (
@@ -8630,9 +8633,20 @@ def main() -> None:
 
     (
         robots,
-        reference_density,
+        spacing_based_reference_density,
         color_reference_density,
     ) = environment.initialize_simulation()
+
+    # HydroSwarm rho_0를 직접 지정
+    reference_density = REFERENCE_DENSITY
+
+    print(
+        "[SPHReferenceDensity] "
+        f"spacing_based="
+        f"{spacing_based_reference_density:.6f} "
+        f"effective="
+        f"{reference_density:.6f}"
+    )
 
     # =====================================================
     # Anchor initialization
