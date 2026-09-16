@@ -9,11 +9,6 @@ from dataclasses import dataclass
 import pygame
 
 
-# Import the original simulator as a library.  Its own Robot class and SPH
-# update functions remain the single implementation of robot behavior.
-os.environ["SPH_DFS_LIBRARY_MODE"] = "1"
-import single_junction_sph_dfs_environment as environment
-
 
 # =========================================================
 # Map geometry
