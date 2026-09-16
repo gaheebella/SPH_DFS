@@ -34,7 +34,7 @@ import single_junction_sph_dfs_environment as environment
 
 # Keep the complete map (geometry, LiDAR ranges, and motion distances) at
 # 80% of its previous size while preserving its current screen center.
-MAP_SIZE_RATIO = 0.576
+MAP_SIZE_RATIO = 0.72
 BASE_MAP_SCALE = 0.4
 MAP_SCALE = BASE_MAP_SCALE * MAP_SIZE_RATIO
 REFERENCE_MAP_SCALE = 0.5
@@ -8521,7 +8521,7 @@ def main() -> None:
 
     # 로봇 수 증가
     environment.ROBOT_COUNT = (
-        400
+        750
     )
 
     environment.ROBOT_RADIUS = (
