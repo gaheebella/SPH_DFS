@@ -5,10 +5,28 @@ import os
 import sys
 from dataclasses import dataclass
 
+# Set SDL before importing pygame so the simulation can run without a
+# visible window: HEADLESS=1 python3 pygame_simulator/final_pdfs.py
+HEADLESS = (
+    os.environ.get(
+        "HEADLESS",
+        "0",
+    )
+    == "1"
+)
+
+if HEADLESS:
+    os.environ["SDL_VIDEODRIVER"] = "dummy"
+    os.environ["SDL_AUDIODRIVER"] = "dummy"
 
 import pygame
 
+
+# Import the original simulator as a library.  Its own Robot class and SPH
+# update functions remain the single implementation of robot behavior.
+os.environ["SPH_DFS_LIBRARY_MODE"] = "1"
 import single_junction_sph_dfs_environment as environment
+
 
 # =========================================================
 # Map geometry
