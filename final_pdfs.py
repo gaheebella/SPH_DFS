@@ -349,9 +349,12 @@ ENTRANCE_DEPTH_CAPTURE_MARGIN = (
     5.0 * SIMULATION_LENGTH_SCALE
 )
 
-INITIAL_SHEPHERD_HOPS = 2
+INITIAL_SHEPHERD_HOPS = 3
 
-INITIAL_SHEPHERD_SEED_DEPTH_RATIO = 1.5
+# Branch 안으로 가장 멀리 팽창한 front edge를
+# 한 개의 seed layer로 묶을 depth band.
+# staggered arrangement를 고려해 약 1.5 row 사용.
+INITIAL_SHEPHERD_FRONT_BAND_ROWS = 1.5
 
 INITIAL_SHEPHERD_HOP_DEPTH_TOLERANCE_RATIO = 0.5
 
@@ -3583,10 +3586,8 @@ def branch_mouth_is_fully_covered(
             - covered_until,
         )
 
-    # 네가 원하는 화면 정도에서
-    # entrance가 충분히 막혔다고 판단
     gap_tolerance = (
-        1.5
+        0.25
         * environment.GRID_SPACING
     )
 
@@ -3609,13 +3610,14 @@ def collect_initial_shepherd_hop_region(
     set[int],
     list[set[int]],
 ]:
-
     """
-    Branch entrance 바로 안쪽의 Shepherd를 Hop 0으로 잡고,
-    Branch 내부 방향으로 communication hop을 확장한다.
+    각 Branch에서 가장 깊이 팽창한 NORMAL robot 1대를
+    Hop 0 seed로 선택한다.
 
-    Hop 0, Hop 1, Hop 2의 3-layer topology를
-    Initial Shepherd formation의 기준으로 사용한다.
+    그 seed로부터 동일한 environment.COMM_RANGE를 사용하여
+    Hop 1 -> Hop 2 -> Hop 3까지 graph-neighbor를 확장한다.
+
+    absolute/map position은 사용하지 않는다.
     """
 
     local_position_by_id = {
@@ -3628,36 +3630,24 @@ def collect_initial_shepherd_hop_region(
     }
 
     entrance_midpoint = (
-        branch[
-            "entrance_midpoint"
-        ]
+        branch["entrance_midpoint"]
     )
 
     axis = (
-        branch[
-            "branch_axis"
-        ]
+        branch["branch_axis"]
     ).normalize()
 
-    depth_tolerance = (
-        INITIAL_SHEPHERD_HOP_DEPTH_TOLERANCE_RATIO
-        * environment.GRID_SPACING
-    )
-    # Branch mouth 바로 앞쪽에 걸쳐 있는 robot도
-    # Hop 0 후보로 인정하기 위한 최소 depth
-    min_hop_depth = -(
-        environment.ROBOT_RADIUS
-        + ENTRANCE_DEPTH_CAPTURE_MARGIN
-    )
+    tangent = (
+        branch["entrance_tangent"]
+    ).normalize()
 
-    # =============================================
-    # 각 candidate의 branch-local depth
-    # =============================================
 
-    depth_by_id: dict[
-        int,
-        float,
-    ] = {}
+    # =================================================
+    # 1. Branch-local depth / lateral
+    # =================================================
+
+    depth_by_id: dict[int, float] = {}
+    lateral_by_id: dict[int, float] = {}
 
     for robot_id in candidate_ids:
 
@@ -3670,64 +3660,79 @@ def collect_initial_shepherd_hop_region(
         if position is None:
             continue
 
-        depth = (
+        offset = (
             position
             - entrance_midpoint
-        ).dot(
+        )
+
+        depth_by_id[
+            robot_id
+        ] = offset.dot(
             axis
         )
 
-    
-        # Branch mouth를 걸치고 있는 Shepherd까지
-        # Hop topology에 포함한다.
-        if depth < min_hop_depth:
-            continue
+        lateral_by_id[
+            robot_id
+        ] = offset.dot(
+            tangent
+        )
 
-        depth_by_id[robot_id] = depth
-
-    # =============================================
-    # Hop 0:
-    # Branch entrance에 가장 가까운 첫 Shepherd layer
-    # =============================================
 
     if not depth_by_id:
-        return set(), [set()]
-    entrance_layer_depth = (
-        INITIAL_SHEPHERD_SEED_DEPTH_RATIO
-        * environment.GRID_SPACING
+
+        return (
+            set(),
+            [set()],
+        )
+
+
+    # =================================================
+    # 2. Hop 0 =
+    #    Branch 안으로 가장 멀리 팽창한 robot 1대
+    #
+    # depth가 같으면 Branch centerline에 가까운 robot 우선
+    # =================================================
+
+    seed_id = max(
+        depth_by_id,
+
+        key=lambda robot_id: (
+            depth_by_id[
+                robot_id
+            ],
+            -abs(
+                lateral_by_id[
+                    robot_id
+                ]
+            ),
+        ),
     )
 
-    seed_ids = {
-        robot_id
-        for robot_id, depth
-        in depth_by_id.items()
-        if (
-            min_hop_depth
-            <= depth
-            <= entrance_layer_depth
-        )
-    }
 
     layers: list[
         set[int]
     ] = [
-        set(
-            seed_ids
-        )
+        {
+            seed_id
+        }
     ]
 
-    visited = set(
-        seed_ids
-    )
+    visited = {
+        seed_id
+    }
 
-    # =============================================
-    # Hop 1 → Hop 2
-    # Branch 안쪽에서 entrance 방향으로 진행한다.
-    # =============================================
+
+    # =================================================
+    # 3. Hop1 -> Hop2 -> Hop3
+    #
+    # 순수 robot-to-robot communication graph
+    # 동일한 COMM_RANGE 사용
+    # =================================================
 
     for _hop in range(
         1,
-        INITIAL_SHEPHERD_HOPS + 1,
+        INITIAL_SHEPHERD_HOPS
+        + 1,
     ):
 
         previous_layer = (
@@ -3741,21 +3746,12 @@ def collect_initial_shepherd_hop_region(
         for source_id in previous_layer:
 
             source_position = (
-                local_position_by_id.get(
-                    source_id
-                )
-            )
-
-            if source_position is None:
-                continue
-
-            source_depth = (
-                depth_by_id[
+                local_position_by_id[
                     source_id
                 ]
             )
 
-            for candidate_id in depth_by_id:
+            for candidate_id in candidate_ids:
 
                 if (
                     candidate_id
@@ -3775,34 +3771,19 @@ def collect_initial_shepherd_hop_region(
                 ):
                     continue
 
-                # communication neighbor인가?
                 if (
                     source_position.distance_to(
                         candidate_position
                     )
-                    > environment.COMM_RANGE
-                ):
-                    continue
-
-                candidate_depth = (
-                    depth_by_id[
-                        candidate_id
-                    ]
-                )
-
-                # 다음 hop은 Branch 안쪽으로 이어져야 한다.
-                # candidate가 source보다 지나치게 entrance 쪽이면 제외.
-                if (
-                    candidate_depth
-                    <
-                    source_depth
-                    - depth_tolerance
+                    >
+                    environment.COMM_RANGE
                 ):
                     continue
 
                 next_layer.add(
                     candidate_id
                 )
+
 
         layers.append(
             next_layer
@@ -3812,15 +3793,18 @@ def collect_initial_shepherd_hop_region(
             next_layer
         )
 
+        if not next_layer:
+            break
+
+
     hop_region_ids = set().union(
-    *layers
+        *layers
     )
 
     return (
         hop_region_ids,
         layers,
     )
-
 
 def shepherd_hop_layer_is_fully_covered(
     observation: LocalObservation,
@@ -3858,8 +3842,8 @@ def shepherd_hop_layer_is_fully_covered(
     )
 
     coverage_half_span = max(
-        environment.ROBOT_RADIUS,
-        0.5 * environment.GRID_SPACING,
+    environment.ROBOT_RADIUS,
+    WALL_CONTACT_RADIUS,
     )
 
     intervals = []
@@ -3934,8 +3918,8 @@ def shepherd_hop_layer_is_fully_covered(
         )
 
     gap_tolerance = (
-        1.5
-        * environment.GRID_SPACING
+        2.0
+        * environment.ROBOT_RADIUS
     )
 
     covered = (
@@ -4043,45 +4027,13 @@ def form_initial_junction_shepherd_boundaries(
             # 다시 이 조건을 검사하지 않는다.
             # =================================================
 
+            # Initial formation 중에는 역할을 바꾸지 않는다.
+            # Branch 안으로 자연스럽게 팽창한 NORMAL만 후보.
             if (
                 robot.role
-                == "NORMAL"
+                != "NORMAL"
             ):
-
-                # ---------------------------------------------
-                # ③ Junction message를 받은 robot인가?
-                # ---------------------------------------------
-
-                if (
-                    robot_id
-                    not in junction_message_received_ids
-                ):
-                    continue
-
-                # ---------------------------------------------
-                # ④ robot ↔ Anchor direct visibility가 있는가?
-                # ---------------------------------------------
-
-                if not robot_has_direct_anchor_los(
-                    robot_id,
-                    observation,
-                ):
-                    continue
-
-            else:
-
-                # 기존에 이미 이 Branch의 Initial Shepherd라면
-                # membership 유지.
-                if not (
-                    robot.role
-                    == "SHEPHERD"
-                    and
-                    robot.role_branch
-                    == branch_id
-                    and
-                    not robot.role_frozen
-                ):
-                    continue
+                continue
              # =================================================
             # DEBUG: Initial Shepherd candidate
             # =================================================
@@ -4132,123 +4084,52 @@ def form_initial_junction_shepherd_boundaries(
                 robot_id
             )
             
-        
+                # =================================================
+        # 1. 아직 모두 NORMAL인 Branch candidate
+        # =================================================
 
-        previous_ids = set(
-            state[
-                "initial_shepherd_ids"
-            ]
+        candidate_ids = set(
+            current_ids
         )
 
-        # =================================================
-        # Branch 안으로 들어온 robot은 모두 Shepherd membership 유지.
-        # 한 번 Shepherd가 된 robot은 freeze 전까지 release하지 않는다.
-        # =================================================
-
-        shepherd_ids = set(current_ids)
-        shepherd_ids.update(previous_ids)
-
-        newly_assigned = (
-            shepherd_ids
-            - previous_ids
-        )
-
-        for robot_id in newly_assigned:
-
-            robot = (
-                robots_by_id[
-                    robot_id
-                ]
-            )
-
-            assign_initial_shepherd_role(
-                robot,
-                branch_id,
-            )
-
-        state[
-            "initial_shepherd_ids"
-        ] = set(
-            shepherd_ids
-        )
-
-        if newly_assigned:
-
-            print(
-                "[InitialShepherdAssigned] "
-                f"branch={branch_id} "
-                f"new={sorted(newly_assigned)} "
-                f"current={len(current_ids)}"
-            )
-
-
-        # =================================================
-        # 1. 현재 Initial Shepherd 위치
-        # =================================================
-
-        shepherd_positions = [
+        candidate_positions = [
             local_position_by_id[
                 robot_id
             ]
 
             for robot_id
-            in shepherd_ids
+            in candidate_ids
 
             if robot_id
             in local_position_by_id
         ]
 
 
+     
+
+
         # =================================================
-        # 2. Branch mouth 전체가 실제로 막혔는지 검사
+        # 3. Branch가 충분히 찼으면
         #
-        # 입구 폭 전체에 큰 gap이 없어야 한다.
-        # =================================================
-
-        (
-            mouth_sealed,
-            max_gap,
-        ) = (
-            branch_mouth_is_fully_covered(
-                branch,
-                shepherd_positions,
-            )
-        )
-
-
-        # =================================================
-        # 3. Branch entrance에서 시작하는
-        #    Hop0 -> Hop1 -> Hop2 topology 계산
+        # 실제 가장 바깥 front edge를 Hop0으로 잡고
+        # Hop1 -> Hop2 -> Hop3을 Junction 방향으로 수집
         # =================================================
 
         (
             hop_region_ids,
             hop_layers,
-        ) = (
-            collect_initial_shepherd_hop_region(
-                observation,
-                branch,
-                shepherd_ids,
-            )
+        ) = collect_initial_shepherd_hop_region(
+            observation,
+            branch,
+            candidate_ids,
         )
 
-
-        # =================================================
-        # 4. 필요한 3개 layer가 모두 존재하는가?
-        #
-        # INITIAL_SHEPHERD_HOPS = 2
-        #
-        # Hop0
-        # Hop1
-        # Hop2
-        #
-        # 총 3개 layer
-        # =================================================
 
         required_layer_count = (
             INITIAL_SHEPHERD_HOPS
             + 1
         )
+
 
         required_hop_ready = (
             len(hop_layers)
@@ -4277,25 +4158,32 @@ def form_initial_junction_shepherd_boundaries(
             for layer
             in hop_layers
         ]
+        # =================================================
+        # Hop0 ~ Hop3 전체 cohort가
+        # Branch 폭을 실제로 막을 수 있는지 검사
+        # =================================================
 
+        (
+            cohort_covered,
+            max_gap,
+        ) = shepherd_hop_layer_is_fully_covered(
+            observation,
+            branch,
+            hop_region_ids,
+        )
 
         # =================================================
-        # 5. Initial Shepherd formation 완료 조건
+        # 4. 완료 조건
         #
-        # 조건 A:
-        #   Branch mouth 전체가 실제로 막힘
-        #
-        # 조건 B:
-        #   entrance부터 Hop0/Hop1/Hop2 형성
-        #
-        # 둘 다 만족하는 순간
-        # 이 Branch의 Initial Shepherd 전체를 정지시킨다.
+        # A. Branch mouth가 실제로 충분히 채워짐
+        # B. front layer 자체가 full-width
+        #    (collect 함수 내부에서 검사)
+        # C. Hop0 -> Hop1 -> Hop2 -> Hop3 모두 존재
         # =================================================
 
         sealed = (
-            mouth_sealed
-            and
-            required_hop_ready
+            
+            cohort_covered
         )
 
 
@@ -4304,34 +4192,56 @@ def form_initial_junction_shepherd_boundaries(
             (
                 "[InitialShepherdCoverage] "
                 f"branch={branch_id} "
-                f"shepherds={len(shepherd_ids)} "
+                f"candidate_count={len(candidate_ids)} "
                 f"hop_counts={hop_counts} "
-                f"mouth_sealed={mouth_sealed} "
-                f"required_hop_ready="
-                f"{required_hop_ready} "
+                f"cohort_count={len(hop_region_ids)} "
+                f"cohort_covered={cohort_covered} "
                 f"max_gap={max_gap:.3f} "
                 f"sealed={sealed}"
             ),
         )
 
 
-        # =================================================
-        # 아직 입구 봉쇄 + 3-hop이 완성되지 않았으면
-        # 계속 SPH로 formation
-        # =================================================
-
         if not sealed:
             continue
 
-
+     
         # =================================================
         # 6. 완료 순간
         #    현재 Initial Shepherd 전체 즉시 freeze
         # =================================================
 
         frozen_ids = set(
-            shepherd_ids
+            hop_region_ids
         )
+
+        for robot_id in frozen_ids:
+
+            robot = (
+                robots_by_id[
+                    robot_id
+                ]
+            )
+
+            # 이 순간 처음으로
+            # NORMAL -> SHEPHERD 역할 변경
+            if (
+                robot.role
+                != "NORMAL"
+            ):
+                raise RuntimeError(
+                    "Initial Shepherd cohort contains "
+                    f"non-NORMAL robot: "
+                    f"id={robot_id} "
+                    f"role={robot.role}"
+                )
+
+            assign_initial_shepherd_role(
+                robot,
+                branch_id,
+            )
+
+            
 
         for robot_id in frozen_ids:
 
@@ -4347,7 +4257,15 @@ def form_initial_junction_shepherd_boundaries(
                 branch_id,
             )
 
+        state[
+            "initial_shepherd_ids"
+        ] = set(
+            frozen_ids
+        )
 
+        state[
+            "initial_sealed"
+        ] = True
         # =================================================
         # 7. Branch state 확정
         # =================================================
@@ -4368,7 +4286,7 @@ def form_initial_junction_shepherd_boundaries(
             f"branch={branch_id} "
             f"count={len(frozen_ids)} "
             f"hop_counts={hop_counts} "
-            f"mouth_sealed={mouth_sealed} "
+            
             f"max_gap={max_gap:.3f} "
             f"ids={sorted(frozen_ids)}"
         )
@@ -8013,7 +7931,7 @@ def draw_robots(
         endpoint = anchor.position + pygame.Vector2(
             math.cos(radians),
             math.sin(radians),
-        ) * measured_range
+        ) * LIDAR_MAX_RANGE
         pygame.draw.line(
             surface,
             COLORS["open_beam"],
@@ -8763,7 +8681,7 @@ def main() -> None:
 
     # 로봇 수 증가
     environment.ROBOT_COUNT = (
-        650
+        300
     )
 
     environment.ROBOT_RADIUS = (
@@ -8794,7 +8712,7 @@ def main() -> None:
         environment.SMOOTHING_LENGTH
     )
 
-    REFERENCE_DENSITY = 0.065
+    REFERENCE_DENSITY = 0.025
 
     # 이 값은 reference density 계산에는 더 이상 사용하지 않는다.
     # 다른 spacing 관련 로직이 사용할 수 있으므로 삭제하지 않음
