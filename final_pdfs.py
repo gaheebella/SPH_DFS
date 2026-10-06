@@ -631,8 +631,7 @@ def extract_lateral_wall_ranges(
 
     def lateral_median(target_angle: float) -> float:
 
-        # 목표 방향(target_angle)을 중심으로 ±2° 이내에 있는 LiDAR ray들의
-        # smoothing된 거리값만 선택한다.
+        # 목표 방향(target_angle)을 중심으로 ±2° 이내에 있는 LiDAR ray들의 smoothing된 거리값만 선택한다.
         # 각도 차이는 360° wrap-around를 고려하여 -180°~180° 범위로 계산한다.
         nearby = [
             measured_range
@@ -1290,38 +1289,23 @@ def physical_is_walkable(
 ) -> bool:
 
     # 검사할 로봇 중심 위치를 pixel 좌표의 정수값으로 변환
-    x = int(
-        round(position.x)
-    )
+    x = int(round(position.x))
 
-    y = int(
-        round(position.y)
-    )
+    y = int(round(position.y))
 
     # 실제 충돌 판정에 사용할 반경 결정
     # 로봇 자체 radius와 벽 접촉을 고려한 WALL_CONTACT_RADIUS 중
     # 더 큰 값을 사용하여 로봇 외곽이 벽을 침범하지 않도록 한다.
-    contact_radius = max(
-        radius,
-        WALL_CONTACT_RADIUS,
-    )
+    contact_radius = max(radius, WALL_CONTACT_RADIUS)
 
     # 실제 pixel 단위로 검사할 반경 계산
     # 최소 1 pixel 이상이며 소수점 반경은 ceil하여 보수적으로 처리
-    pixel_radius = max(
-        1,
-        int(math.ceil(contact_radius)),
-    )
+    pixel_radius = max(1, int(math.ceil(contact_radius)))
 
     # 로봇 중심에서 대각선 방향으로도 같은 반경만큼 떨어진 점을 검사하기 위해
     # x, y 각각의 대각선 offset을 계산한다.
     # diagonal² + diagonal² ≈ pixel_radius²
-    diagonal = int(
-        round(
-            pixel_radius
-            / math.sqrt(2.0)
-        )
-    )
+    diagonal = int(round(pixel_radius/ math.sqrt(2.0)))
 
     # 로봇이 차지하는 원형 영역을 근사하기 위해 총 9개 지점을 검사
     # 중심 1개 + 상하좌우 4개 + 대각선 4개
@@ -4227,28 +4211,30 @@ def get_anchor_nearby_backtracking_normals(
 
 
 # =========================================================
-# Backtracking Shepherd - Hop 0 Seed 1대 선택
+# Backtracking Shepherd - Seed 선택
 #
 # VISITED Marker 또는 Dead-end 감지 후 Backtracking Shepherd를 형성하기 위해
-# Anchor 바로 뒤쪽에 있는 NORMAL 로봇 중 Hop 0 seed 1대를 선택한다.
+# Anchor 바로 뒤쪽에 있는 NORMAL 로봇 중 seed 1대를 선택한다.
 #
 # 1. Anchor 자신과 NORMAL이 아닌 로봇은 제외
-# 2. Anchor-local 좌표에서 Anchor 진행방향 뒤쪽(x < 0)의 로봇만 후보로 사용
+# 2. Anchor-local 좌표에서 Anchor 진행방향 뒤쪽에 있는 로봇만 후보로 사용
 # 3. Anchor와 직접 통신 가능한 COMM_RANGE 이내의 로봇만 후보로 사용
-# 4. 조건을 만족하는 후보 중 Anchor와 가장 가까운 NORMAL 1대를 선택
-# 5. 선택된 robot ID를 Backtracking Shepherd의 Hop 0 seed로 반환
+# 4. 조건을 만족하는 후보 중 Anchor와 가장 가까운 NORMAL 1대를 seed로 선택
+# 5. 선택된 seed는 이후 multi-hop 모집의 기준점이며,
+#    collect_backtracking_seed_one_two_hop()에서 seed-relative Hop 0으로 사용된다.
 #
-# 이후 collect_backtracking_seed_one_two_hop()에서 이 seed를 Hop 0으로 사용하고,
-# robot-to-robot COMM_RANGE를 따라 Hop 1 → Hop 2까지 확장하여
+# 이후 robot-to-robot COMM_RANGE를 따라
+# seed 기준 Hop 1 → Hop 2까지 확장하여
 # Backtracking Shepherd cohort를 구성한다.
 #
 # 흐름:
 # Backtracking 시작
 # → Anchor 뒤쪽 NORMAL 탐색
-# → Anchor와 COMM_RANGE 이내 후보 추출
+# → Anchor와 직접 통신 가능한 후보 추출
 # → Anchor와 가장 가까운 NORMAL 1대 선택
-# → Hop 0 seed
-# → Hop 1~2 Multi-hop Shepherd 모집
+# → Backtracking seed
+# → seed-relative Hop 0으로 설정
+# → Hop 1~2 multi-hop Shepherd 모집
 #
 # 모든 위치 판단은 Anchor-relative local position을 사용한다.
 # =========================================================
@@ -4288,7 +4274,8 @@ def find_backtracking_seed(
     if not candidates:
         return None
 
-    # Anchor와 가장 가까운 NORMAL을 Hop 0 seed로 선택
+    # Anchor와 직접 통신 가능한 NORMAL 중 가장 가까운 로봇을
+    # Backtracking seed로 선택
     candidates.sort()
     return candidates[0][1]
 
@@ -4332,7 +4319,7 @@ def collect_backtracking_seed_one_two_hop(
     if seed_robot.role != "NORMAL":
         return set(), [set(), set(), set()]
 
-    # Anchor 뒤쪽에 위치한 NORMAL만 multi-hop 모집 대상으로 사용
+    # Anchor 뒤쪽에 위치한 NORMAL만 multi-hop 모집 대상으로 사용 (로봇 ID, 로봇의 2차원 상대위치(Anchor 기준 상대좌표))
     eligible: dict[int, pygame.Vector2] = {}
 
     for robot_id, local_position in local_position_by_id.items():
@@ -4352,7 +4339,7 @@ def collect_backtracking_seed_one_two_hop(
     if seed_id not in eligible:
         return set(), [set(), set(), set()]
 
-    # Hop 0 = Anchor 주변에서 선택된 NORMAL seed 1대
+    # Hop 0 = find_backtracking_seed()에서 선택된 NORMAL seed 1대
     seed_layer = {seed_id}
 
     # Hop 1 = Hop 0 seed와 robot-to-robot COMM_RANGE 이내에서 직접 통신 가능한 NORMAL
@@ -4362,21 +4349,35 @@ def collect_backtracking_seed_one_two_hop(
         if candidate_id == seed_id:
             continue
 
+        # "seed와 candidate 사이 거리가 COMM_RANGE 이하인가?"
         if (candidate_position - seed_position).length() <= environment.COMM_RANGE:
             one_hop.add(candidate_id)
+
+
+    # seed/Hop1 제외한 나머지 eligible 로봇
+    # → 각 Hop1 로봇과 거리 계산
+    # → COMM_RANGE 이내면
+    # → Hop2
 
     # Hop 2 = Hop 1과 직접 통신 가능하며 Hop 0/1에 아직 포함되지 않은 추가 NORMAL
     two_hop: set[int] = set()
 
+    # 각 Hop 1 로봇을 통신거리 검사 기준점으로 사용 (source_position 이 hop1 로봇의 상대위치)
     for source_id in one_hop:
         source_position = eligible[source_id]
 
+        # eligible.items()에는 이미 앞 단계에서 걸러진 “Anchor 뒤쪽의 NORMAL 로봇들”이 들어있음
+        # Anchor 뒤쪽의 eligible NORMAL 전체를 Hop 2 후보로 다시 검사
         for candidate_id, candidate_position in eligible.items():
+            # 이미 seed(hop 0)이거나 hop1에 이미 들어간 로봇은 제외 -> 남는건 Anchor 뒤쪽 NORMAL 중에서 아직 Hop 0도 아니고 Hop 1도 아닌 로봇들
             if candidate_id == seed_id or candidate_id in one_hop:
                 continue
 
+            # candidate_position = 현재 검사 중인 Hop 2 후보 로봇의 Anchor-relative 위치
+            # source_position = 현재 기준이 되는 Hop 1 로봇의 Anchor-relative 위치  
             relative_position = candidate_position - source_position
 
+            # 현재 Hop 1 로봇과 통신거리 이내인 로봇만 Hop 2에 추가
             if relative_position.length() <= environment.COMM_RANGE:
                 two_hop.add(candidate_id)
 
@@ -4420,53 +4421,53 @@ def required_backtracking_crowd_count(corridor_width: float) -> int:
 
 
 
-# =========================================================
-# Backtracking Shepherd - Role Activation In Place
-#
-# Hop 0~2로 선택된 Backtracking Shepherd cohort를 현재 위치 그대로
-# NORMAL → SHEPHERD(PUSH)로 전환하여 이후 Pressure Push에 사용한다.
-# =========================================================
-def activate_backtracking_shepherds_in_place(
-    robot_ids: list[int],
-    robots_by_id: dict[int, environment.Robot],
-    branch_id: str,
-) -> None:
+# # =========================================================
+# # Backtracking Shepherd - Role Activation In Place
+# #
+# # Hop 0~2로 선택된 Backtracking Shepherd cohort를 현재 위치 그대로
+# # NORMAL → SHEPHERD(PUSH)로 전환하여 이후 Pressure Push에 사용한다.
+# # =========================================================
+# def activate_backtracking_shepherds_in_place(
+#     robot_ids: list[int],
+#     robots_by_id: dict[int, environment.Robot],
+#     branch_id: str,
+# ) -> None:
 
-    for robot_id in robot_ids:
-        robot = robots_by_id[robot_id]
+#     for robot_id in robot_ids:
+#         robot = robots_by_id[robot_id]
 
-        # Backtracking Shepherd로 선택된 로봇은 반드시 NORMAL이어야 함
-        if robot.role != "NORMAL":
-            raise RuntimeError(
-                f"Captured backtracking robot is not NORMAL: "
-                f"id={robot_id} role={robot.role}"
-            )
+#         # Backtracking Shepherd로 선택된 로봇은 반드시 NORMAL이어야 함
+#         if robot.role != "NORMAL":
+#             raise RuntimeError(
+#                 f"Captured backtracking robot is not NORMAL: "
+#                 f"id={robot_id} role={robot.role}"
+#             )
 
-        # 역할 전환 전 위치 저장: 전환 과정에서 위치가 바뀌지 않는지 확인
-        before = robot.position.copy()
+#         # 역할 전환 전 위치 저장: 전환 과정에서 위치가 바뀌지 않는지 확인
+#         before = robot.position.copy()
 
-        # NORMAL → Backtracking SHEPHERD로 역할 변경하고 현재 Branch와 PUSH mode 지정
-        robot.role = "SHEPHERD"
-        robot.role_branch = branch_id
-        robot.shepherd_mode = "PUSH"
+#         # NORMAL → Backtracking SHEPHERD로 역할 변경하고 현재 Branch와 PUSH mode 지정
+#         robot.role = "SHEPHERD"
+#         robot.role_branch = branch_id
+#         robot.shepherd_mode = "PUSH"
 
-        # 이후 Junction 방향으로 이동해야 하므로 위치를 freeze하지 않음
-        robot.role_frozen = False
-        robot.role_frozen_position = None
+#         # 이후 Junction 방향으로 이동해야 하므로 위치를 freeze하지 않음
+#         robot.role_frozen = False
+#         robot.role_frozen_position = None
 
-        # 기존 NORMAL의 motion state만 초기화하며 현재 위치는 변경하지 않음
-        robot.velocity.update(0.0, 0.0)
-        robot.acceleration.update(0.0, 0.0)
-        robot.filtered_acceleration.update(0.0, 0.0)
-        robot.commanded_velocity.update(0.0, 0.0)
-        robot.observed_velocity.update(0.0, 0.0)
+#         # 기존 NORMAL의 motion state만 초기화하며 현재 위치는 변경하지 않음
+#         robot.velocity.update(0.0, 0.0)
+#         robot.acceleration.update(0.0, 0.0)
+#         robot.filtered_acceleration.update(0.0, 0.0)
+#         robot.commanded_velocity.update(0.0, 0.0)
+#         robot.observed_velocity.update(0.0, 0.0)
 
-        # 역할 전환으로 위치가 바뀌었다면 오류
-        if robot.position.distance_to(before) > environment.EPSILON:
-            raise RuntimeError(
-                "Backtracking Shepherd role transition "
-                "caused a position jump."
-            )
+#         # 역할 전환으로 위치가 바뀌었다면 오류
+#         if robot.position.distance_to(before) > environment.EPSILON:
+#             raise RuntimeError(
+#                 "Backtracking Shepherd role transition "
+#                 "caused a position jump."
+#             )
 
 
 
@@ -4542,8 +4543,7 @@ def relay_backtracking_shepherd_command(
     # 각 로봇의 Anchor-relative local 위치를 ID별로 저장
     local_position_by_id = {
         robot_id: local_position
-        for robot_id, local_position
-        in zip(observation.robot_ids, observation.relative_positions)
+        for robot_id, local_position in zip(observation.robot_ids, observation.relative_positions)
     }
 
     # Hop 0 seed가 formation 또는 현재 observation에 없으면 relay 실패
@@ -4630,8 +4630,9 @@ def relay_backtracking_shepherd_command(
 # =========================================================
 # Backtracking Shepherd - Formation Start
 #
-# 유효한 Branch 탐색 종료 이벤트가 발생했을 때,
-# 선택된 Shepherd formation 전체에 FORM 명령을 relay하여 대형 형성을 시작한다.
+# Branch 탐색이 정상적으로 끝났을 때, 
+# Backtracking에 사용할 Shepherd 로봇 전체에게 FORM 명령이 전달됐는지 확인하고, 
+# 모두 받았을 때만 formation 시작을 승인
 # =========================================================
 def start_backtracking_shepherd_formation(
     observation: LocalObservation,
@@ -4786,7 +4787,9 @@ def detach_backtracking_shepherd_group_step(
         local_position = local_position_by_id.get(robot_id)
         if local_position is None:
             continue
-
+        
+        # 각 Shepherd의 Anchor-relative 위치를 이용하여 계산
+        # Anchor 를 기준점으로 삼아서, Anchor 와 벽 사이의 거리 & Anchor 와 Shepherd의 상대위치 정보를 결합해 Shepherd 와 벽 사이의 거리를 추정
         left_room = local_position.y + left_range - contact_radius
         right_room = right_range - local_position.y - contact_radius
         left_rooms.append(left_room)
@@ -5204,8 +5207,8 @@ def evaluate_normal_reverse_flow(
 
 
 # Backtracking Shepherd - Prepare Pressure Push
-# 형성이 완료된 Backtracking Shepherd 전체에 PUSH 명령을 multi-hop으로 전달하고,
-# 모든 Shepherd가 PUSH mode로 전환되었는지 확인한다.
+# 이미 형성이 끝난 Backtracking Shepherd 전체에게 PUSH 명령을 relay하고, 
+# 모두 PUSH 명령을 받은 경우에만 Pressure Push를 시작하도록 허용하는 함수
 def prepare_backtracking_shepherd_push(
     observation: LocalObservation,
     chain_order: list[int],
@@ -6448,158 +6451,296 @@ def integrate_sph_only_robot(
 #    Environment / SPH parameter 설정
 #    → Staggered grid 형태로 swarm 생성
 #    → 초기 Anchor 선택
-#    → 나머지 로봇은 NORMAL swarm으로 시작
+#    → Anchor를 제외한 나머지 로봇은 NORMAL swarm으로 시작
+#    → Anchor LiDAR / DFS / Branch / Backtracking runtime state 초기화
 #
 # 2. ROOT JUNCTION DETECTION
-#    Anchor가 corridor를 따라 전진하며 360° LiDAR scan
-#    → 좌/우 wall range 변화를 이용해 Junction entrance 검출
+#    Anchor가 corridor를 따라 전진하면서 매 physics substep마다 360° LiDAR scan
+#    → ±90° 주변 LiDAR range로 좌·우 wall distance 추출
+#    → 좌·우 wall distance로 adaptive worst wall range W 계산
+#    → W와 LiDAR maximum range를 이용해 adaptive OPEN/WALL threshold T 계산
+#    → 전체 360° range profile을 smoothing
+#    → threshold T로 OPEN/WALL ray 분류
+#    → 연속 OPEN ray grouping
+#    → range gradient로 Opening boundary refinement
+#    → Opening geometry 생성
+#    → 유효 Opening이 3개 이상이면 lidar.junction_evidence = True
+#
+#    동시에 이동 중:
+#    → update_junction_entrance_detector()
+#    → ±90° lateral range history로 정상 corridor baseline 형성
+#    → 좌·우 lateral range가 baseline보다 동시에 크게 증가하면 Junction entrance 검출
+#
+#    Junction entrance 검출
 #    → Anchor 정지
-#    → stationary LiDAR observation으로 Junction 여부 확인
+#    → 진입 직전 corridor baseline으로 W와 T 재계산
+#    → freeze_stationary_threshold()로 W와 T 고정
+#    → stationary LiDAR observation 시작
+#    → 동일 Opening을 center_angle 기준으로 association
+#    → observation count + persistence ratio 검사
+#    → persistent Opening이 3개 이상이면 Junction 최종 확정
 #
 # 3. LOCAL JUNCTION GEOMETRY
-#    Base entrance corner + front mouth corner 검출
+#    Junction entrance에서 얻은 Base-side corner geometry
+#    + stationary LiDAR의 front-side corner geometry 사용
 #    → Anchor-local 좌표계에서 Junction center 추정
-#    → 여러 scan에서 center가 안정적으로 관측되면 target 고정
-#    → Anchor가 추정된 Junction center로 이동
+#    → 여러 scan에서 center estimate를 누적
+#    → 안정적으로 동일한 center가 관측되면 local target 고정
+#    → Anchor가 local odometry를 이용해 추정된 Junction center로 이동
 #
 # 4. BRANCH REGISTRATION
-#    Junction center에서 LiDAR opening들을 Branch로 등록
-#    → 각 Branch에 runtime Branch ID 부여
-#    → Branch geometry / visit state 생성
-#    → 초기 상태 = UNVISITED
+#    Anchor가 Junction center에 도달한 뒤 현재 LiDAR opening들을 이용해 Branch 등록
+#    → parent/rear corridor에 해당하는 Opening 제외
+#    → 나머지 outgoing Opening마다 runtime Branch 생성
+#    → Branch ID 부여
+#    → center angle / mouth geometry / tangent / branch axis 저장
+#    → Branch runtime state 생성
+#    → 초기 visit_state = UNVISITED
 #
 # 5. INITIAL SHEPHERD / MARKER FORMATION
-#    Anchor가 JUNCTION_CONFIRMED message broadcast
-#    → Branch entrance 주변 NORMAL들이 multi-hop으로 연결
-#    → 각 Branch 입구에 Initial Shepherd boundary 형성
-#    → boundary 완성 후 Shepherd 고정
-#    → 각 Branch에서 Shepherd 1대를 Marker로 전환
+#    Junction 최종 확정 후 Anchor가 JUNCTION_CONFIRMED message broadcast 시작
+#    → Branch entrance로 자연스럽게 유입된 NORMAL들을 candidate로 수집
+#    → 각 Branch에서 가장 깊이 들어간 NORMAL 1대를 Hop 0 seed로 선택
+#    → robot-to-robot COMM_RANGE를 따라
+#         Hop 1 → Hop 2 → ... → INITIAL_SHEPHERD_HOPS까지 확장
+#    → Hop 0~max-hop 전체 cohort의 lateral coverage 검사
+#
+#    Branch 입구가 아직 충분히 막히지 않음
+#    → Shepherd 확정하지 않고 다음 frame까지 대기
+#    → 새로운 NORMAL 유입 후 cohort와 coverage 다시 계산
+#
+#    Branch 입구가 충분히 막힘
+#    → multi-hop cohort 전체를 SHEPHERD로 전환
+#    → 현재 위치에서 freeze
+#    → 해당 Branch의 initial_sealed = True
+#
+#    모든 Branch의 Initial Shepherd boundary가 완성되면
+#    → Junction broadcast 종료
+#    → 각 Branch Initial Shepherd 중 1대를 Marker로 전환
 #    → Marker state = UNVISITED
 #
 # 6. PHYSICAL DFS BRANCH SELECTION
-#    Branch order에서 다음 UNVISITED Branch 선택
+#    Initial Marker 생성 완료 후 confirmed Branch 순서를 뒤집어
+#    runtime branch_order 생성
+#
+#    → find_next_unvisited_branch()
+#    → branch_order 앞에서부터 UNVISITED Branch 탐색
 #    → 선택 Branch: UNVISITED → ACTIVE
-#    → 해당 Branch의 Initial Shepherd들을 NORMAL로 release
-#    → Marker는 Branch 상태 표시를 위해 유지
-#    → Anchor heading을 선택 Branch 방향으로 변경
+#    → 해당 Branch의 Initial Shepherd boundary를 release하여 NORMAL로 복귀
+#    → Branch Marker는 상태 표시용으로 유지
+#    → Anchor heading을 선택 Branch center_angle 방향으로 변경
 #
 # 7. BRANCH ENTRY / EXPLORATION
 #    Anchor가 선택 Branch 입구를 통과
-#    → 360° LiDAR free-gap을 따라 독립적으로 Branch 탐색
-#    → NORMAL swarm은 SPH로 Anchor 뒤를 따라 이동
-#    → Anchor는 swarm의 가장 앞선 NORMAL과 일정 간격 유지
-#    → 탐색 중 Marker 또는 Dead-end를 탐색 종료 조건으로 검사
+#    → Branch entry local odometry 누적
+#    → Branch 내부 탐색 상태 BRANCH_EXPLORE 진입
+#
+#    탐색 중:
+#    → Anchor 전방 LiDAR에서 traversable free gap 탐색
+#    → 가장 적합한 free gap 방향으로 Anchor yaw / forward motion 제어
+#    → NORMAL swarm은 계속 SPH로 이동
+#    → Anchor는 가장 앞선 NORMAL과 목표 간격을 유지하도록 speed cap 적용
+#
+#    또한:
+#    → Branch 시작 지점의 자기 Marker는 일정 거리까지 ignore
+#    → 충분히 전진한 뒤 전방 Marker 탐색 활성화
+#    → Marker 또는 Dead-end를 Branch 탐색 종료 조건으로 검사
 #
 # 8. TERMINAL EVENT
-#    [A] 다른 Branch의 Marker 발견
-#        → 해당 Marker가 다른 Branch의 것이면 그 Branch를 VISITED 처리
+#    [A] Visible Marker 발견
+#        → 현재 Branch 진입 시 사용한 자기 Marker는 제외
+#        → 전방 / corridor 내부 / detection range / LiDAR LOS 조건을 모두 만족한 Marker 탐지
+#        → Marker가 다른 Branch의 Marker라면
+#             해당 Marker가 속한 Branch를 VISITED 처리
+#        → 현재 Branch의 탐색 종료 event를 MARKER로 설정
 #
-#    [B] 진행 가능한 LiDAR free-gap이 연속적으로 없음
-#        → Dead-end 확정
+#    [B] 진행 가능한 LiDAR free gap이 없음
+#        → Dead-end candidate
+#        → Anchor 정지
+#        → DEAD_END_CONFIRM_FRAMES 동안 연속적으로 free gap이 없는지 확인
+#        → 연속 조건 만족 시 Dead-end 확정
+#        → 탐색 종료 event를 DEAD_END로 설정
 #
-#    Marker 또는 Dead-end가 확인되면 Anchor 정지
-#    → Backtracking 시작
+#    Marker 또는 Dead-end가 확정되면
+#    → backtrack_event_valid = True
+#    → BACKTRACK_WAIT_SHEPHERD 진입
 #
 # 9. BACKTRACKING SHEPHERD FORMATION
-#    Anchor 뒤의 가장 가까운 NORMAL 1대를 Hop 0 seed로 선택
-#    → Hop 1: seed의 COMM_RANGE 이웃
-#    → Hop 2: Hop 1의 COMM_RANGE 이웃
-#    → Hop 0~2 cohort 전체를 Backtracking Shepherd로 전환
-#    → 동일 Shepherd ID / topology를 Parent Junction 복귀까지 유지
-#    → 복귀 방향 = 탐색 종료 시 Anchor heading의 반대 방향
+#    Anchor 정지
+#    → Anchor 뒤쪽 NORMAL 중
+#      Anchor와 직접 COMM_RANGE 안에 있는 가장 가까운 1대를 Hop 0 seed로 선택
+#
+#    → Hop 1:
+#      Hop 0과 COMM_RANGE로 연결된 NORMAL 모집
+#
+#    → Hop 2:
+#      Hop 1과 COMM_RANGE로 연결된 NORMAL 모집
+#
+#    → Hop 0~2 전체 cohort를 Backtracking Shepherd로 사용
+#    → selected cohort의 ID와 relative topology 유지
+#    → Shepherd command relay를 통해 FORM 상태 확인
+#    → 이후 PUSH 상태로 전환
+#
+#    복귀 heading은 Branch 탐색 종료 시 Anchor heading의 반대 방향 사용
 #
 # 10. PRESSURE PUSH
-#    Backtracking Shepherd cohort가 Junction 방향으로 이동
-#    → Shepherd가 NORMAL과 접촉하면 physical contact acceleration 전달
-#    → NORMAL에는 별도의 goal/backtracking force를 사용하지 않음
-#    → NORMAL의 기본 controller는 계속
-#         f_SPH = f_press + f_vis
-#    → 물리적 압력 전달에 의해 NORMAL swarm의 역방향 흐름 유도
+#    Backtracking Shepherd cohort가 return heading 방향으로 rigid하게 이동
+#    → Shepherd가 NORMAL과 물리적으로 접촉하면 contact acceleration 전달
 #
-# 11. FLOW BACKTRACKING
-#    NORMAL의 observed velocity를 이용해 실제 reverse flow 확인
-#    → 충분한 NORMAL이 Junction 방향으로 이동하면 FLOW_BACKTRACK
-#    → Anchor + 동일 Backtracking Shepherd cohort가 복귀 corridor 진행
+#    NORMAL에는 별도의 Junction goal force / backtracking goal force를 추가하지 않음
+#    → NORMAL은 계속 기본 SPH controller 사용
 #
-#    Shepherd가 벽에 걸림
+#       f_SPH = f_press + f_vis
+#
+#    → Shepherd의 물리적 접촉과 밀어내기에 의해
+#      NORMAL swarm에 Junction 방향 역류 유도
+#
+# 11. PRESSURE PUSH → FLOW BACKTRACKING
+#    SPH integration 이후 NORMAL의 실제 observed velocity 검사
+#    → Junction 복귀 방향 velocity 성분 계산
+#    → 충분한 수의 NORMAL이 reverse direction으로 이동
+#    → reverse ratio / minimum robot count / stable scan 조건 만족
+#    → FLOW_BACKTRACK으로 전환
+#
+# 12. FLOW BACKTRACKING
+#    Anchor + 동일 Backtracking Shepherd cohort가 Parent Junction 방향으로 복귀
+#    → Anchor는 NORMAL swarm front를 따라가면서 corridor 중앙 유지
+#
+#    Shepherd가 wall 때문에 return 방향으로 이동할 수 없음
 #        → BACKTRACK_WALL_DETACH
-#        → cohort 전체를 같은 방향으로 lateral shift
-#        → 기존 topology 유지 후 Backtracking 재개
+#        → 전체 cohort를 동일한 lateral 방향으로 shift
+#        → 기존 Shepherd topology 유지
+#        → 이동 가능해지면 복귀 계속
 #
 #    corridor corner 발견
 #        → BACKTRACK_CORNER_TURN
-#        → Anchor와 동일 Shepherd cohort가 함께 회전
-#        → 새로운 corridor 정렬 후 FLOW_BACKTRACK 재개
+#        → Anchor와 동일 Shepherd cohort를 rigid motion으로 함께 회전
+#        → 새 corridor에 들어온 뒤 corridor width / heading 조건 확인
+#        → 필요하면 새 corridor 폭 밖의 Shepherd만 NORMAL로 release
+#        → FLOW_BACKTRACK 재개
 #
-# 12. PARENT JUNCTION RETURN
-#    LiDAR lateral range 변화로 Parent Junction entrance 재검출
-#    → Anchor 정지 + stationary Junction confirmation
-#    → local corner geometry로 Junction center 재추정
+# 13. PARENT JUNCTION RETURN
+#    복귀 중 update_junction_entrance_detector()를 다시 사용
+#    → return corridor의 lateral baseline 형성
+#    → 좌·우 lateral range 증가로 Parent Junction entrance 재검출
+#
+#    Parent Junction entrance 도착
+#    → Anchor 정지
+#    → return corridor baseline으로 adaptive W / T 고정
+#    → stationary Junction confirmation 수행
+#    → persistence 조건으로 Parent Junction 재확인
+#
+#    → 들어온 Branch-side corner + 반대편/front-side corner geometry 이용
+#    → Parent Junction center를 Anchor-local 좌표로 재추정
+#    → 안정된 local center target 고정
 #    → Anchor가 Junction center로 이동
-#    → Shepherd는 남은 NORMAL을 계속 Junction 방향으로 push
 #
-# 13. PHYSICAL BRANCH RETURN COMPLETE
-#    Branch 내부 swarm의 물리적 복귀 완료 확인
+#    이 동안 Backtracking Shepherd는
+#    남은 NORMAL swarm을 계속 Junction 방향으로 push
+#
+# 14. PHYSICAL BRANCH RETURN COMPLETE
+#    Parent Junction center 도달 후
+#    → Branch 내부 swarm의 실제 물리적 복귀 완료 여부 확인
+#
+#    복귀 완료
 #    → Backtracking Shepherd들을 NORMAL로 release
 #    → 현재 ACTIVE Branch를 VISITED로 변경
-#    → 탐색했던 Branch 입구의 Shepherd boundary 재형성
+#    → 해당 Branch Marker state도 VISITED로 변경
 #
-# 14. DFS CONTINUATION
-#    Branch order에서 다음 UNVISITED Branch 탐색
+#    → 해당 Branch의 Initial Shepherd state 초기화
+#    → 방금 탐색한 Branch 입구를 다시 Initial Shepherd boundary로 형성
+#    → physical sealing이 다시 완료될 때까지 대기
+#
+# 15. DFS CONTINUATION
+#    탐색 완료 Branch의 입구가 다시 봉쇄되면
+#    → SELECT_NEXT_BRANCH
+#
+#    branch_order에서 다음 UNVISITED Branch 탐색
 #
 #    UNVISITED Branch 존재
-#        → SELECT_NEXT_BRANCH
-#        → Branch open
+#        → Branch = ACTIVE
+#        → Branch Shepherd release
 #        → BRANCH_ENTRY
 #        → BRANCH_EXPLORE
+#        → Marker / Dead-end
 #        → Backtracking
-#        → 위 과정 반복
+#        → Parent Junction Return
+#        → Branch VISITED
+#        → Branch reseal
+#        → 반복
 #
 #    UNVISITED Branch 없음
 #        → ROOT_COMPLETE
 #
-# 15. FINAL BASE RETURN
-#    Root의 모든 Branch 탐색 완료
+# 16. FINAL BASE RETURN
+#    Root Junction의 모든 Branch 탐색 완료
+#    → Junction reference heading 복원
+#    → final push에 사용할 Branch / Shepherd group 선택
 #    → side Branch의 Shepherd / Marker release
-#    → swarm이 Root Junction으로 합류할 때까지 대기
-#    → 선택된 Shepherd group이 swarm을 Base 방향으로 push
+#    → side에 남아 있던 swarm이 Root Junction으로 합류할 때까지 대기
+#
+#    → Final Shepherd group이 swarm을 Base 방향으로 push
 #    → swarm의 Base 복귀 완료 확인
-#    → Shepherd release
-#    → Anchor도 Base 방향으로 최종 복귀
+#    → Final Shepherd release
+#
+#    → Anchor heading을 Base 방향으로 변경
+#    → Anchor가 corridor-following으로 Base 방향 최종 복귀
 #    → SYSTEM_COMPLETE
 #
-# 16. SPH SWARM MOTION (EVERY PHYSICS SUBSTEP)
+# 17. SPH SWARM MOTION (EVERY PHYSICS SUBSTEP)
 #    Spatial grid에서 주변 이웃 후보 탐색
-#    → density 계산
-#    → pressure 계산
+#    → density ρ_i 계산
+#    → pressure P_i 계산
 #    → pressure force + viscosity force 계산
-#    → f_SPH = f_press + f_vis
-#    → acceleration → velocity → position 적분
-#    → wall collision 처리
 #
-#    단, Marker / Frozen Shepherd는 위치 고정
-#    Backtracking Shepherd는 SPH가 아니라 별도의 physical push motion 사용
+#       f_SPH = f_press + f_vis
+#
+#    → acceleration
+#    → velocity
+#    → wall collision을 고려한 position integration
+#    → observed velocity 갱신
+#
+#    Backtracking 중 Shepherd와 NORMAL이 실제 접촉하면
+#    → contact acceleration을 NORMAL acceleration에 추가
+#
+#    단:
+#    → Marker / role_frozen Shepherd는 위치 고정
+#    → Backtracking PUSH Shepherd는 SPH integration 대상에서 제외
+#    → Final Base Push Shepherd 역시 별도 motion 사용
 #
 # 전체 핵심 흐름:
 #
 # Base
-# → Junction Detection
+# → Corridor Following + 360° LiDAR
+# → Adaptive W / Threshold T
+# → Junction Entrance Detection
+# → Threshold Freeze
+# → Stationary Persistence Verification
+# → Junction Confirmed
 # → Junction Center Estimation
 # → Branch Registration
-# → Initial Shepherd + Marker Formation
+# → Initial Shepherd Formation
+# → Initial Marker Creation
+# → Runtime Branch Order
 # → Select UNVISITED Branch
+# → Branch Entry
 # → Branch Exploration
 # → Marker / Dead-end
 # → Hop 0-2 Backtracking Shepherd Formation
 # → Pressure Push
+# → Reverse Flow Confirmation
 # → Flow Backtracking
-# → Parent Junction Return
+# → Parent Junction Entrance Detection
+# → Parent Junction Stationary Confirmation
+# → Parent Junction Center Return
+# → Physical Swarm Return Complete
 # → ACTIVE Branch = VISITED
+# → Branch Reseal
 # → Next UNVISITED Branch
 # → 모든 Branch 완료
-# → Swarm + Anchor Base Return
+# → Final Swarm Base Push
+# → Anchor Base Return
 # → SYSTEM_COMPLETE
-# =========================================================
 # =========================================================
 
 
@@ -7414,6 +7555,26 @@ def main() -> None:
             # 6-3. Backtracking Shepherd Formation
             # Marker/Dead-end로 Branch 탐색이 종료되면 Anchor를 정지시키고,
             # Anchor 주변 NORMAL에서 Hop 0→1→2 통신 cohort를 구성해 Backtracking Shepherd로 전환한다.
+            #
+            #find_backtracking_seed()
+            # ↓
+            # Hop (Anchor에 가장 가까운 NORMAL을 seed로 선정)
+            #
+            # collect_backtracking_seed_one_two_hop()
+            # ↓
+            # Hop0 + Hop1 + Hop2 (hop 구조를 만듦)
+            #
+            # start_backtracking_shepherd_formation()
+            # ↓
+            # FORM
+            #
+            # relay_backtracking_shepherd_command()
+            # ↓
+            # 명령 전파 (실제 명령 전달)
+            #
+            # prepare_backtracking_shepherd_push()
+            # ↓
+            # PUSH
             # =================================================
             elif anchor_motion_mode == "BACKTRACK_WAIT_SHEPHERD":
 
@@ -7439,6 +7600,15 @@ def main() -> None:
                         # Hop 0: Anchor에 가장 가까운 NORMAL을 seed로 선정
                         if backtrack_seed_id is None:
                             backtrack_seed_id = find_backtracking_seed(observation, robots_by_id)
+
+                            # 새 seed가 실제로 선정된 경우 로그 출력
+                            if backtrack_seed_id is not None:
+                                print(
+                                    "[BacktrackingSeedSelected] "
+                                    f"branch={active_branch_id} "
+                                    f"seed={backtrack_seed_id} "
+                                    f"reason={backtrack_trigger_reason}"
+                                )
 
                         # Seed가 없으면 Anchor는 정지하고 NORMAL swarm이 가까워질 때까지 대기
                         if backtrack_seed_id is None:
